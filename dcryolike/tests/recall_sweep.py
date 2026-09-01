@@ -9,7 +9,7 @@ in-plane rotation, computed for all rotations at once by FFT along theta
 (requires isotropic CTF so ||T|| is gamma-independent).
 """
 import sys, time, numpy as np, torch
-sys.path.insert(0, "/home/wtang/cryoem/dcryolike"); sys.path.insert(0, "/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from dcryolike.generator import gaussian_atom_volume, generate, uniform_so3
 from dcryolike.slicing import fourier_circles, slice_points, slice_nufft

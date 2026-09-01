@@ -36,6 +36,17 @@ reverts via `trap`, so an interrupted run still restores the tree.
 it still prints PASS, still exits 0, still meets any floor. Only fault injection
 catches that, which is why `verify_harness.sh` exists.
 
+## Layout
+
+    <checkout>/
+      dcryolike/          this package + tests
+      cryolike/           reference clone (gitignored, not vendored)
+      venv/               gitignored
+
+Paths are resolved relative to each file, so the tree runs from any location
+(verified by running the suite from a relocated checkout). If the reference
+package lives elsewhere, set `CRYOLIKE_SRC` to its `src/` directory.
+
 ## Environment
 
 `requirements.txt` is pinned. The non-obvious constraint: **torch must come from

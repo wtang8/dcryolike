@@ -11,7 +11,7 @@ the answer an UPPER BOUND on what any deconvolution could recover.
 """
 import sys, numpy as np, torch
 from scipy.special import sph_harm_y
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from dcryolike.generator import gaussian_atom_volume, uniform_so3, make_ctf
 from dcryolike.slicing import fourier_circles, slice_points, slice_nufft, fourier_volume, slice_gridding

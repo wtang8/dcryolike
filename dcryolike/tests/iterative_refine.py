@@ -9,7 +9,7 @@ Scored against GROUND TRUTH every iteration. Half-map FSC is useless here: both
 halves would share the same reference and inflate together.
 """
 import sys, os, time, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, generate

@@ -1,7 +1,7 @@
 """Validate the SphereShell-backed adaptive shell grids (the only grid we keep)."""
 import sys, numpy as np, torch
 from scipy.special import sph_harm_y
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from dcryolike.spheregrid import RingGrid
 from dcryolike.adaptive import AdaptiveShellGrid
 from dcryolike.generator import gaussian_atom_volume

@@ -9,7 +9,7 @@ rate as a function of starting error. In-plane sampling is scaled with the box
 so the outermost shell stays properly sampled.
 """
 import sys, time, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from dcryolike.generator import gaussian_atom_volume, generate
 from dcryolike.refine import refine_poses

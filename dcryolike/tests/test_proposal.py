@@ -8,7 +8,7 @@ slice has an identical magnitude spectrum) and its nearest neighbour lands at
 to magnitude features cannot pass silently.
 """
 import sys, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, make_ctf

@@ -6,7 +6,7 @@ there is therefore a convention bug (shift, axis order, normalisation), not
 interpolation error -- which is what we actually want to catch.
 """
 import sys, torch, numpy as np
-sys.path.insert(0, "/home/wtang/cryoem/dcryolike")
+import _paths  # noqa: F401
 from dcryolike.slicing import fourier_volume, slice_gridding, fourier_circles
 import sys as _sys
 _FAILS=[]

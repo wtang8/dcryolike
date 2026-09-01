@@ -4,7 +4,7 @@ The second half matters as much as the first: a determinism test that passes
 because everything returns a constant is vacuous.
 """
 import sys, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 _FAILS=[]
 def _v(c):
     _FAILS.append(bool(c)); return 'PASS' if c else 'FAIL'

@@ -9,7 +9,7 @@ Normalised cross-correlation is the control: it is gain-invariant but NOT
 offset-invariant, so it should break where the ILL does not.
 """
 import sys, os, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from cryolike.util import fourier_bessel_transform

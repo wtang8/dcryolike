@@ -13,7 +13,7 @@ If half-map >> vs truth, the estimate is inflated and the refinement is
 overfitting despite the split.
 """
 import sys, os, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, generate

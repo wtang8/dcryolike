@@ -16,7 +16,7 @@ both half-maps correlates them and inflates FSC in exactly the shells at issue.
 deliberate: it makes the result an UPPER BOUND on what deconvolution can buy.
 """
 import sys, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from dcryolike.generator import gaussian_atom_volume, generate, uniform_so3, make_ctf
 from dcryolike.slicing import fourier_circles, slice_points, slice_nufft, fourier_volume

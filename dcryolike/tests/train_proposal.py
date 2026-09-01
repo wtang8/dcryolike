@@ -2,7 +2,7 @@
 on IDENTICAL test particles, with the identical recall@K protocol.
 """
 import sys, time, numpy as np, torch, torch.nn.functional as F
-sys.path.insert(0, "/home/wtang/cryoem/dcryolike"); sys.path.insert(0, "/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, generate, uniform_so3, make_ctf
@@ -104,4 +104,4 @@ with torch.no_grad():
         print(f"{'':6}{'net':>4}" + "".join(f"{x:7.1f}%" for x in netr))
         print(f"{'':6}{'gap':>4}" + "".join(f"{n-c:+7.1f} " for c,n in zip(ceil,netr)))
 print(f"\ntotal {time.time()-t0:.0f}s")
-torch.save(net.state_dict(), '/home/wtang/cryoem/dcryolike/proposal_net.pt')
+torch.save(net.state_dict(), str(__import__('pathlib').Path(__file__).resolve().parents[1]/'proposal_net.pt'))

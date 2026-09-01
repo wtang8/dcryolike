@@ -1,7 +1,8 @@
 #!/bin/bash
 # Validation tests (test_*.py) plus a smoke run of the fast analysis scripts.
-PY=/home/wtang/cryoem/venv/bin/python
-cd /home/wtang/cryoem
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+PY="${PYTHON:-$ROOT/venv/bin/python}"; [ -x "$PY" ] || PY=python3
 pass=0; fail=0; declare -a failed
 # Three independent guards, because any one of them can silently stop working:
 #   1. exit code   - catches crashes AND assertion failures
@@ -12,7 +13,7 @@ run () {
   [ -f "$f" ] || { printf "%-26s MISSING\n" "$label"; fail=$((fail+1)); failed+=("$label: file missing"); return; }
   printf '%-26s ' "$label"
   local t0=$(date +%s)
-  out=$(timeout "$to" $PY "$f" 2>&1); rc=$?
+  out=$(timeout "$to" "$PY" "$f" 2>&1); rc=$?
   local dt=$(( $(date +%s) - t0 ))
   if [ $rc -ne 0 ]; then
     echo "ERROR (rc=$rc, ${dt}s)"; fail=$((fail+1)); failed+=("$label: exit $rc")

@@ -9,7 +9,7 @@ Success = the true viewing direction lies within one grid spacing of at least
 one of the top-K candidates at that level (i.e. it survives into the next stage).
 """
 import sys, numpy as np, torch
-sys.path.insert(0,"/home/wtang/cryoem/dcryolike"); sys.path.insert(0,"/home/wtang/cryoem/cryolike/src")
+import _paths  # noqa: F401  (sets sys.path relative to this file)
 from cryolike.grids import PolarGrid
 from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, generate

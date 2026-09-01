@@ -1,8 +1,9 @@
 #!/bin/bash
 # Meta-test: prove the harness DETECTS failure. A suite that cannot fail is not
 # a test. Each fault is injected, checked, and reverted via trap.
-cd /home/wtang/cryoem
-PY=/home/wtang/cryoem/venv/bin/python
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+PY="${PYTHON:-$ROOT/venv/bin/python}"; [ -x "$PY" ] || PY=python3
 BK=$(mktemp -d)
 # restore each file to ITS OWN directory -- a blanket cp of $BK/* into both
 # left stray copies behind (dcryolike/tg.py, tests/slicing.py)
@@ -17,14 +18,14 @@ report () { if [ "$2" = "$3" ]; then echo "  DETECTED   $1"; ok=$((ok+1));
 
 echo "=== 1. wrong geometry -> assertion failure + nonzero exit ==="
 sed -i 's|g = (points + D // 2) \* (2.0 / (D - 1)) - 1.0|g = (points + D // 2) * (2.0 / (D - 1)) - 1.0 + 1e-3|' dcryolike/dcryolike/slicing.py
-$PY dcryolike/tests/test_slicing.py >/tmp/o1 2>&1; rc=$?
+"$PY" dcryolike/tests/test_slicing.py >/tmp/o1 2>&1; rc=$?
 report "script exit code nonzero" "$([ $rc -ne 0 ] && echo yes || echo no)" "yes"
 report "FAIL string present"      "$(grep -qc FAIL /tmp/o1 >/dev/null && grep -q FAIL /tmp/o1 && echo yes || echo no)" "yes"
 restore
 
 echo "=== 2. crash mid-suite -> caught as ERROR, not silent pass ==="
 sed -i '0,/print("TEST 2/s//raise RuntimeError("injected crash") or print("TEST 2/' dcryolike/tests/test_grids.py
-$PY dcryolike/tests/test_grids.py >/tmp/o2 2>&1; rc=$?
+"$PY" dcryolike/tests/test_grids.py >/tmp/o2 2>&1; rc=$?
 report "crash gives nonzero exit" "$([ $rc -ne 0 ] && echo yes || echo no)" "yes"
 restore
 

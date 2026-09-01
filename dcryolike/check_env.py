@@ -48,7 +48,10 @@ try:
 except Exception as e:
     check("cufinufft", lambda: (_ for _ in ()).throw(e))
 try:
-    sys.path.insert(0, "/home/wtang/cryoem/cryolike/src")
+    from pathlib import Path
+    import os
+    _r = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, os.environ.get("CRYOLIKE_SRC", str(_r/"cryolike"/"src")))
     from cryolike.grids import PolarGrid
     check("cryolike reference importable", lambda: PolarGrid(
         radius_max=8, dist_radii=1.0, n_inplanes=32, uniform=True).n_shells > 0, True)
