@@ -1,0 +1,17 @@
+# Python environment (7.3 GB). Recreate from dcryolike/requirements.txt --
+# note torch MUST come from the cu128 index for sm_120; see that file.
+venv/
+__pycache__/
+*.pyc
+
+# Third-party reference clone (flatironinstitute/CryoLike, MIT). Has its own
+# git history and is not ours to vendor. Clone alongside:
+#   git clone https://github.com/flatironinstitute/CryoLike.git cryolike
+cryolike/
+
+# Trained checkpoints: 46 MB binary, regenerable via tests/train_proposal.py
+*.pt
+
+# Scratch
+*.out
+output/

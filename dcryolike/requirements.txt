@@ -1,0 +1,33 @@
+# Pinned environment for dcryolike.
+#
+# TORCH MUST COME FROM THE cu128 INDEX. This machine is an RTX 5070 Ti
+# (Blackwell, sm_120), which CUDA 12.4 does not know about at all -- the
+# default PyPI torch build has no sm_120 kernels and fails at runtime with
+# "no kernel image is available for execution on the device". Install with:
+#
+#   python3 -m venv venv
+#   ./venv/bin/pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+#   ./venv/bin/pip install -r requirements.txt
+#   ./venv/bin/python dcryolike/check_env.py     # verifies the GPU actually works
+#
+# cufinufft 2.5.1 ships CUDA 12.4 wheels but runs on sm_120 via PTX JIT with a
+# recent driver (verified: 610.88). Its wheel declares only numpy+packaging, so
+# it does NOT disturb torch's bundled nvidia-* libraries -- confirmed by diffing
+# pip freeze before and after. Do not "fix" this by installing nvidia-* pins.
+
+torch==2.11.0+cu128          # --index-url https://download.pytorch.org/whl/cu128
+cufinufft==2.5.1             # GPU NUFFT; CPU fallback is finufft
+numpy==2.5.2
+scipy==1.18.1                # roots_legendre / roots_jacobi / sph_harm_y
+mrcfile==1.5.4
+matplotlib==3.11.1
+tqdm==4.70.0
+
+# required by the cryolike reference package
+pydantic==2.13.5
+pandas==3.0.5
+starfile==0.5.13
+
+# transitively pinned by torch's cu128 build -- listed so a mismatch is visible
+# nvidia-cuda-runtime-cu12==12.8.90
+# nvidia-cufft-cu12==11.3.3.83
