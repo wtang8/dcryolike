@@ -40,6 +40,11 @@ SNR=float(os.environ.get("SNR","0.05")); ISO=dict(astig=0.0)
 # cutoff, so no ground truth leaks into the loop. Scoring is on the raw
 # reconstruction -- the filter only limits what the next iteration may chase.
 LOWPASS=os.environ.get("LOWPASS","0")=="1"
+# GOLD=1: TRUE gold standard. Each half is posed against its OWN previous
+# reference, so the two halves are fully independent -- no cross-coupling.
+# Default (GOLD=0) is cross-referenced: A posed against B's map and vice versa,
+# which breaks self-reinforcement but lets the halves converge on shared error.
+GOLD=os.environ.get("GOLD","0")=="1"
 vol=gaussian_atom_volume(D,device=dev); Ftrue=fourier_volume(vol)
 pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=128,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
@@ -131,8 +136,9 @@ def pose_search(dens_ref,ids):
     return tidx,torch.softmax(lg,dim=1),bg
 
 F0=Ftrue.clone(); F0[RR>R_INIT]=0; dens0=to_real(F0)
-print(f"PHYSICAL noise, real-space SNR {SNR} | {NP} particles, halves of {NP//2} | cross-referenced"
-      f"{' | LOW-PASS CONTROL ON (half-map FSC 0.5 cutoff)' if LOWPASS else ''}")
+print(f"PHYSICAL noise, real-space SNR {SNR} | {NP} particles, halves of {NP//2}"
+      f"{' | LOW-PASS CONTROL ON (half-map FSC 0.5 cutoff)' if LOWPASS else ''}"
+      f"{' | GOLD STANDARD (independent halves, own reference)' if GOLD else ' | cross-referenced'}")
 print(f"start = truth low-passed at r={R_INIT} (FSC0.5 {res_at(fsc(fourier_volume(dens0),Ftrue))} px)\n")
 print(f"{'iter':>5}  {'--------- argmax ---------':^28}  {'--------- mixture --------':^28}")
 print(f"{'':5}  {'vsTruth':>9}{'halfmap':>9}{'meanFSC':>10}  {'vsTruth':>9}{'halfmap':>9}{'meanFSC':>10}")
@@ -144,7 +150,7 @@ for it in range(1,ITERS+1):
         newF=[None,None]
         for h in (0,1):
             ids=HALF[h]
-            tidx,wt,bg=pose_search(ref[mode][1-h],ids)        # CROSS reference
+            tidx,wt,bg=pose_search(ref[mode][h if GOLD else 1-h],ids)   # own ref if GOLD, else cross
             si,sw=(tidx[:,:1],torch.ones(len(ids),1,device=dev,dtype=vol.dtype)) \
                   if mode=="argmax" else (tidx,wt)
             newF[h]=reconstruct(ids,si,sw,bg)

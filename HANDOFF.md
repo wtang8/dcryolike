@@ -78,6 +78,36 @@
 >      cross-reference coupling drift. Test = TRUE gold standard (each half against its OWN
 >      reference, fully independent) and compare decay + half-map honesty.
 >
+> **TRUE GOLD STANDARD RUN (2 Sep) — hypothesis CONFIRMED.** `GOLD=1` in
+> `iterative_halfset_physical.py`: each half posed against its OWN previous reference, fully
+> independent. Iteration 1 is bit-identical to cross-referenced (same initial reference), so
+> everything after is the effect of the protocol alone.
+>
+>    | SNR 0.3 mean FSC | iter 1 | iter 2 | iter 6 | half-map vs truth |
+>    |---|---|---|---|---|
+>    | cross-ref argmax | 0.4435 | **0.4548** (peak) | 0.4508 | 12p vs 12p |
+>    | GOLD argmax | 0.4435 | 0.4421 | 0.4394 | **10p vs 11p (honest)** |
+>    | cross-ref mixture | 0.4518 | **0.4657** (peak) | 0.4583 | 13p vs 12p |
+>    | GOLD mixture | 0.4518 | 0.4510 | 0.4440 | **10p vs 11p (honest)** |
+>
+>    - **The iteration-2 peak is a cross-referencing artefact.** It is a *boost*: each half's
+>      poses improve using the OTHER half's data via its reference, so the map briefly reflects
+>      ~8000 particles' worth of information. Then the halves converge on shared error and it
+>      decays. Under GOLD there is no rise at all — a gentle monotonic decline from iter 1.
+>    - **Half-map FSC is honest under GOLD** (10p throughout, ≤ truth + 1 shell, both SNRs).
+>      The inflation seen under low-pass (14p vs 9p) was cross-referencing + filtering; it is
+>      gone. **This is the protocol to use for any resolution claim.**
+>    - **Cross-referencing produces genuinely better maps at its peak** (+2.5% argmax, +3.1%
+>      mixture over GOLD's best) — the classic trade: shared information vs honest estimate.
+>    - **A residual slow decline survives GOLD** (−0.9% argmax, −1.7% mixture over 6 iters at
+>      0.3; −1.1% / −1.6% at 0.1). Cross-referencing explained the peak and most of the decay,
+>      not all of it. Remaining mechanism: poses chasing noise in the raw, unfiltered reference.
+>      The low-pass control failed under cross-ref because of the FSC feedback loop; under GOLD
+>      the FSC is honest, so the loop is gone and **GOLD + LOWPASS is now the right test.**
+>    - **Mixture margin survives a fifth protocol:** GOLD +1.0–2.0% (SNR 0.3), +1.9–2.6% (0.1),
+>      every iteration. Protocols tested: contaminated (artefact), decontaminated, shared-ref
+>      (self-reinforcement artefact), cross-ref, GOLD. Direction consistent in all four valid ones.
+>
 > **Frequency marching RE-RUN under physical noise (2 Sep)** — `adaptive_sampling_physical.py`.
 > Coarse stage k_cut=6 (8 shells, 9.5° grid, 662 views, **0.8% of full cost**), truth within
 > one coarse cell of a top-100 candidate: SNR 1.0 **100%**, 0.3 **92%**, 0.1 **66%**. Viable at
@@ -180,20 +210,20 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**The low-pass control was run and did not fix the decay** (details in the review block). The
-decay's cause is now the open question, and the half-map FSC inflation it exposed is a hazard
-for any gold-standard claim from this pipeline. In order of value:
+**Gold standard confirmed cross-referencing as the cause of the peak, most of the decay, and the
+FSC inflation** (review block). The protocol is now trustworthy: GOLD mode gives honest half-map
+FSC. A residual slow decline (~1–2% over 6 iterations) remains, from poses chasing noise in the
+raw reference. In order of value:
 
-1. **True gold standard.** Each half posed against its OWN previous reference — fully
-   independent, no cross-coupling. Compare against cross-referenced: does the decay shrink,
-   and does the mixture's half-map FSC stop inflating? If yes, cross-referencing was trading
-   self-reinforcement for cross-reinforcement and the fix is independence, not filtering.
-2. **Per-shell noise weighting in the likelihood.** The CC uses fixed quadrature weights
-   that GROW with radius, so at low SNR the noise-only outer shells dominate the score.
-   RELION-style whitening (weight ∝ SSNR per shell) is the standard fix and may raise the
-   ceiling — the D=96 33% top-1 at SNR 0.05 was measured without it.
-3. **Cut refinement cost.** It is 99% of per-iteration time. Measure convergence vs steps;
-   refine only the top mode; refine every 2nd–3rd iteration.
+1. **GOLD + LOWPASS.** The low-pass control failed under cross-ref because inflated half-map
+   FSC fed back into the cutoff. Under GOLD the FSC is honest, so the feedback loop is gone.
+   If the residual decline disappears, the pipeline is stable and every number is clean. If
+   not, try the soft version: per-shell SSNR weighting of the reference (RELION-style), which
+   down-weights unreliable shells smoothly instead of cutting them. Note: this is for the
+   ITERATIVE loop only — the ceiling (truth templates, white noise) is already optimal.
+2. **Mixture at D=96, GOLD protocol.** Confirms the margin at realistic box size on the
+   trustworthy protocol. Heavy (~30 min); use the lowmem pattern.
+3. **Cut refinement cost** (99% of per-iteration time).
 
 ```
 ./dcryolike/run_tests.sh
@@ -204,15 +234,14 @@ Then paste into a new session:
 > Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
 > `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
 > `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
-> The low-pass control (`LOWPASS=1` in `tests/iterative_halfset_physical.py`) did NOT
-> remove the iteration-2–3 decay, and under it the mixture's half-map FSC inflated to 14 px
-> against a 9 px truth. Hypothesis: cross-referencing (A posed against B's map, B against
-> A's) couples the halves. Add a `GOLD=1` mode where each half is posed against its OWN
-> previous reference — fully independent halves — and re-run SNR 0.3 and 0.1 without
-> low-pass. Report per iteration: truth FSC, half-map FSC, and the gap between them, for
-> argmax and mixture. Score against truth; keep the measured-C posterior temperature.
-> If the decay shrinks and the half-map FSC stops inflating, cross-referencing was the
-> cause. Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
+> True gold standard (`GOLD=1` in `tests/iterative_halfset_physical.py`) confirmed that
+> cross-referencing caused the iteration-2 peak and the half-map FSC inflation; under GOLD
+> the FSC is honest and a gentle ~1–2% decline over 6 iterations remains. Now run
+> `GOLD=1 LOWPASS=1` at SNR 0.3 and 0.1: with honest half-map FSC the feedback loop that
+> broke the low-pass control is gone. Report per iteration truth FSC, half-map FSC, mean
+> FSC, and the cutoff, for argmax and mixture. Does the residual decline disappear? Does
+> the mixture margin hold? Keep the measured-C posterior temperature and score against
+> truth. Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
 > mixture-vs-argmax comparison.
