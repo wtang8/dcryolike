@@ -34,6 +34,12 @@ from dcryolike.slicing import fourier_circles, slice_points, slice_nufft, fourie
 
 dev="cuda"; D=48; NP=8000; MODES=10; NEIGH=10.0; ITERS=6; R_INIT=8
 SNR=float(os.environ.get("SNR","0.05")); ISO=dict(astig=0.0)
+# LOWPASS=1: before a half-map becomes the next pose-search bank, low-pass it at
+# the HALF-MAP FSC 0.5 crossing (soft cosine edge, 2 shells). Half-map FSC is
+# what a real pipeline has; truth FSC is used only for SCORING, never for the
+# cutoff, so no ground truth leaks into the loop. Scoring is on the raw
+# reconstruction -- the filter only limits what the next iteration may chase.
+LOWPASS=os.environ.get("LOWPASS","0")=="1"
 vol=gaussian_atom_volume(D,device=dev); Ftrue=fourier_volume(vol)
 pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=128,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
@@ -68,6 +74,9 @@ def res_at(f,t=0.5):
     for k,v in enumerate(f,start=1):
         if v<t: return k
     return len(f)
+def lowpass(F,kc,width=2.0):
+    t=((RR-kc)/width).clamp(0,1)
+    return F*(0.5*(1+torch.cos(np.pi*t)))
 def to_real(F):
     return torch.fft.fftshift(torch.fft.ifftn(torch.fft.ifftshift(F),norm="ortho")).real.contiguous()
 
@@ -122,12 +131,13 @@ def pose_search(dens_ref,ids):
     return tidx,torch.softmax(lg,dim=1),bg
 
 F0=Ftrue.clone(); F0[RR>R_INIT]=0; dens0=to_real(F0)
-print(f"PHYSICAL noise, real-space SNR {SNR} | {NP} particles, halves of {NP//2} | cross-referenced")
+print(f"PHYSICAL noise, real-space SNR {SNR} | {NP} particles, halves of {NP//2} | cross-referenced"
+      f"{' | LOW-PASS CONTROL ON (half-map FSC 0.5 cutoff)' if LOWPASS else ''}")
 print(f"start = truth low-passed at r={R_INIT} (FSC0.5 {res_at(fsc(fourier_volume(dens0),Ftrue))} px)\n")
 print(f"{'iter':>5}  {'--------- argmax ---------':^28}  {'--------- mixture --------':^28}")
 print(f"{'':5}  {'vsTruth':>9}{'halfmap':>9}{'meanFSC':>10}  {'vsTruth':>9}{'halfmap':>9}{'meanFSC':>10}")
 print("-"*70)
-ref={m:[dens0.clone(),dens0.clone()] for m in ("argmax","mixture")}
+ref={m:[dens0.clone(),dens0.clone()] for m in ("argmax","mixture")}; cut={}
 for it in range(1,ITERS+1):
     line=f"{it:>5}  "
     for mode in ("argmax","mixture"):
@@ -138,7 +148,13 @@ for it in range(1,ITERS+1):
             si,sw=(tidx[:,:1],torch.ones(len(ids),1,device=dev,dtype=vol.dtype)) \
                   if mode=="argmax" else (tidx,wt)
             newF[h]=reconstruct(ids,si,sw,bg)
-        ref[mode]=[to_real(newF[0]),to_real(newF[1])]
         fa,fb=fsc(newF[0],Ftrue),fsc(newF[1],Ftrue); fh=fsc(newF[0],newF[1])
+        if LOWPASS:
+            kc=res_at(fh,0.5)                       # from HALF-MAP FSC only
+            ref[mode]=[to_real(lowpass(newF[0],kc)),to_real(lowpass(newF[1],kc))]
+            cut[mode]=kc
+        else:
+            ref[mode]=[to_real(newF[0]),to_real(newF[1])]
         line+=f"{(res_at(fa)+res_at(fb))/2:>8.1f}p{res_at(fh):>8}p{(fa.mean()+fb.mean())/2:>10.4f}  "
+    if LOWPASS: line+=f"  cut a/m {cut['argmax']}/{cut['mixture']}p"
     print(line)

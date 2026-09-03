@@ -58,6 +58,39 @@
 >    missing ingredient. Same direction and magnitude as the pre-review +2–6%, so that
 >    finding was right for the wrong reason and is now right for the right one.
 >
+> **Low-pass control RUN (2 Sep) — NEGATIVE, and it exposed a hazard.** `LOWPASS=1` in
+> `iterative_halfset_physical.py`: each half-map low-passed at its HALF-MAP FSC 0.5 crossing
+> before becoming the next bank (no truth leaks in).
+>
+>    - **Did not remove the decay.** Both branches still peak at iter 2–3 and fall. Peak
+>      values slightly LOWER than without the filter (SNR 0.3: argmax 0.4516 vs 0.4548).
+>      At SNR 0.1 both decay from iter 1 and end worse (argmax −6.3% vs −2.7% unfiltered).
+>    - **Mixture margin survives regardless:** +1.3–2.7% (SNR 0.3), +3.7% at iter 6 (SNR 0.1).
+>    - **HAZARD — half-map FSC inflates under the mixture.** At SNR 0.1 the mixture's half-map
+>      FSC 0.5 climbs 10→12→13→14 px while its truth FSC sits at 9 px: a 5-shell overestimate,
+>      i.e. a gold-standard resolution claim of 14 px for a 9 px map. Argmax stays honest
+>      (10 vs 9). Mechanism: cross-referencing couples the halves (A posed against B, B
+>      against A → they converge on shared error); low-passing both to the same cutoff makes
+>      the references near-identical; the mixture's 10 poses per particle all chase that
+>      shared reference. The inflated FSC raises the next cutoff, which filters less, which
+>      inflates further — a feedback loop that switches the control off by iter 4.
+>    - **So the decay is NOT an over-sharp reference.** Cause still open. Leading hypothesis:
+>      cross-reference coupling drift. Test = TRUE gold standard (each half against its OWN
+>      reference, fully independent) and compare decay + half-map honesty.
+>
+> **Frequency marching RE-RUN under physical noise (2 Sep)** — `adaptive_sampling_physical.py`.
+> Coarse stage k_cut=6 (8 shells, 9.5° grid, 662 views, **0.8% of full cost**), truth within
+> one coarse cell of a top-100 candidate: SNR 1.0 **100%**, 0.3 **92%**, 0.1 **66%**. Viable at
+> SNR ≥ 0.3; at 0.1 the first level loses ~1/3 of particles. Qualitative claim from the old
+> generator holds. (Rows use their own grid-cell tolerance, so levels are not directly
+> comparable as accuracy — only as survival for hierarchical search.)
+>
+> **Stage timing (2 Sep, D=48, uncontended)** — `stage_timing.py`. Per particle: coarse search
+> (208 views) 38 µs, **refinement (100 steps) 17,452 µs = 99%**, mixture insert (10 poses)
+> 163 µs, Wiener divide negligible. ~29 min/iteration at 10⁵ particles, all refinement.
+> **Search is not the bottleneck; pose refinement is, by two orders of magnitude.** Levers:
+> fewer steps (100 was generous), refine only the top mode, refine every Nth iteration.
+>
 > **Ceiling re-established at D=96 (done 2 Sep):** `tests/recall_ceiling_physical_boxsize.py`.
 > Memory note: P=512 at D=96 puts the bank at 6.1 GB; the run peaked near the 16 GB limit.
 > `recall_ceiling_physical_boxsize_lowmem.py` (P=256, smaller chunks, run with `python -u`)
@@ -147,18 +180,20 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**Both post-review re-runs are done** (D=96 ceiling; mixture vs argmax under physical noise —
-tables in the review block). The marginalisation result stands. What remains, in order of value:
+**The low-pass control was run and did not fix the decay** (details in the review block). The
+decay's cause is now the open question, and the half-map FSC inflation it exposed is a hazard
+for any gold-standard claim from this pipeline. In order of value:
 
-1. **The low-pass control.** Every iterative run — old and new, shared and cross-referenced —
-   peaks at iteration 2–3 and decays. That is the reference sharpening past what the data
-   supports. Low-pass each half-map at its own FSC-vs-truth cutoff (or a fixed schedule) before
-   it becomes the next bank. If the decay disappears and the mixture margin holds, the
-   marginalisation result is clean; if the margin vanishes, it was partly an overfitting artefact.
-2. **Mixture at D=96.** Confirms the margin at realistic box size. Heavy: 8000 particles × 10
-   modes × 25k points scattered into 96³. Use the lowmem pattern; expect ~30 min.
-3. **Proposal network gap under physical noise at D=96.** Lowest value — the review showed the
-   coarse search is already cheap.
+1. **True gold standard.** Each half posed against its OWN previous reference — fully
+   independent, no cross-coupling. Compare against cross-referenced: does the decay shrink,
+   and does the mixture's half-map FSC stop inflating? If yes, cross-referencing was trading
+   self-reinforcement for cross-reinforcement and the fix is independence, not filtering.
+2. **Per-shell noise weighting in the likelihood.** The CC uses fixed quadrature weights
+   that GROW with radius, so at low SNR the noise-only outer shells dominate the score.
+   RELION-style whitening (weight ∝ SSNR per shell) is the standard fix and may raise the
+   ceiling — the D=96 33% top-1 at SNR 0.05 was measured without it.
+3. **Cut refinement cost.** It is 99% of per-iteration time. Measure convergence vs steps;
+   refine only the top mode; refine every 2nd–3rd iteration.
 
 ```
 ./dcryolike/run_tests.sh
@@ -169,14 +204,15 @@ Then paste into a new session:
 > Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
 > `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
 > `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
-> The mixture-vs-argmax comparison has been re-run under physical noise
-> (`tests/iterative_halfset_physical.py`) and the margin survives (+2–4% mean FSC). Both
-> branches still peak at iteration 2–3 and decay. Add the low-pass control: before each
-> half-map becomes the next pose-search bank, low-pass it at a cutoff derived from that
-> half-map's own FSC (against truth for this synthetic study; note that a real pipeline would
-> use half-map FSC). Re-run at SNR 0.3 and 0.1 and report whether the decay disappears and
-> whether the mixture margin survives. Keep cross-referenced half-sets, score against truth,
-> keep the measured-C posterior temperature. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
+> The low-pass control (`LOWPASS=1` in `tests/iterative_halfset_physical.py`) did NOT
+> remove the iteration-2–3 decay, and under it the mixture's half-map FSC inflated to 14 px
+> against a 9 px truth. Hypothesis: cross-referencing (A posed against B's map, B against
+> A's) couples the halves. Add a `GOLD=1` mode where each half is posed against its OWN
+> previous reference — fully independent halves — and re-run SNR 0.3 and 0.1 without
+> low-pass. Report per iteration: truth FSC, half-map FSC, and the gap between them, for
+> argmax and mixture. Score against truth; keep the measured-C posterior temperature.
+> If the decay shrinks and the half-map FSC stops inflating, cross-referencing was the
+> cause. Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
 > mixture-vs-argmax comparison.
