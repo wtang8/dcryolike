@@ -1,5 +1,47 @@
 # HANDOFF — dcryolike
 
+> ## ⚠ REVIEW FINDING (2026-09-02, second model pass) — READ FIRST
+>
+> **The synthetic noise model was unphysical, and every headline number was
+> measured on an easier problem than real noise poses.**
+>
+> `generate()` added iid noise per polar grid point. No real-space noise field
+> produces that: real noise is white in real space, and its polar transform is
+> strongly *correlated* (measured 1.000 between adjacent inner-shell points,
+> 0.50 mid-shell). Three independent checks agree:
+> 1. On iid noise, *unweighted* CC beats CryoLike's weighted CC by +12 top-1 —
+>    i.e. the "exact likelihood" was not the matched filter for that data.
+> 2. On real-space white noise transformed exactly to the polar grid, the
+>    weighted CC wins. **CryoLike's quadrature weighting is correct; the
+>    generator was wrong.**
+> 3. Corrected ceiling (physical noise, real-space per-pixel SNR, D=48):
+>
+>    |  SNR  | top-1 old → new | @500 old → new |
+>    |------|-----------------|----------------|
+>    | 1.00 | 94.0% → 47.0%   | 100% → 100%    |
+>    | 0.10 | 35.0% → 1.0%    | 99.5% → 48.0%  |
+>    | 0.05 | 17.5% → 0.0%    | 95.5% → 19.5%  |
+>
+> **What survives:** the estimator-vs-proposal gap (at SNR 0.3: 13.5% top-1 vs
+> 88.5% @500), the SNR^-0.5 precision law (Cramér-Rao form is noise-model
+> independent), grid-independence of refinement, the antipodal degeneracy
+> (pure algebra), the deconvolution negative result (information-theoretic).
+> **What does not:** every specific number; the network-vs-ceiling gap (trained
+> on unphysical noise); the mixture margins (posterior `beta` was calibrated
+> under the wrong noise model). The D=48 corrected numbers are ALSO not
+> representative — real boxes are 5× larger and information grows ~k_max^2.7.
+>
+> **Fix landed:** `generator.generate_physical()` — real-space white noise,
+> exact DFT to polar, real-space SNR (whole box, CTF-free projection).
+> Validated: bridge cosine 1.00000000, realised SNR exact, correlation
+> structure asserted. `recall_sweep_physical.py` is the corrected sweep.
+> `generate()` kept, with a warning, so earlier scripts stay reproducible.
+>
+> Also cleared by review: `refine.py` has no pole singularity (polar 1–3°:
+> 0.54–0.71° median, 96–98% recovered). Minor: `adaptive.py` stuffs
+> `n_polar/n_azim` with point counts (unread, but misleading); runner PASS
+> count is inflated by 1–2 non-verdict tokens in `test_ctf`/`test_generator`.
+
 Repo `git@github.com:wtang8/dcryolike.git` (private) · branch `main` @ `ea9f4d4` · tree clean.
 Layout: `dcryolike/` (ours) + `cryolike/` (Flatiron reference, gitignored, push URL deliberately
 disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
@@ -73,7 +115,9 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-Recommended: add the low-pass control to the iterative loop — it unconfounds the only live result.
+**Changed by the review.** Before anything else, re-establish the ceiling under physical noise at a
+realistic box size — the D=48 corrected numbers are as unrepresentative (too hard) as the old ones
+were (too easy). Only after that is any downstream experiment worth re-running.
 
 ```
 ./dcryolike/run_tests.sh
@@ -81,7 +125,14 @@ Recommended: add the low-pass control to the iterative loop — it unconfounds t
 
 Then paste into a new session:
 
-> Read `HANDOFF.md` and `dcryolike/README.md` in /home/wtang/cryoem.
+> Read `HANDOFF.md` (the REVIEW FINDING block first) and `dcryolike/README.md` in /home/wtang/cryoem.
+> The synthetic noise model was found to be unphysical and has been replaced by
+> `generator.generate_physical()`. Re-establish the recall ceiling under physical noise at
+> D=96 and D=128 (see `tests/recall_sweep_physical.py` for the D=48 version and
+> `tests/capture_vs_box.py` for how larger boxes were handled before), using real-space
+> per-pixel SNR in both whole-box and in-mask conventions. Report top-1 and recall@K at
+> SNR 1.0, 0.3, 0.1, 0.05. That table replaces the one in the artifact. Only then
+> continue the marginalisation thread below.
 > Continue the marginalisation thread. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the

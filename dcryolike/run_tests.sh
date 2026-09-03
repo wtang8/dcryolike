@@ -43,6 +43,7 @@ run dcryolike/tests/test_determinism.py "determinism"          300 3
 run dcryolike/tests/test_slicing.py    "slicing operators"    300 6
 run dcryolike/tests/test_generator.py  "particle generator"   300 5
 run dcryolike/tests/test_ctf.py        "CTF vs cryolike ref"  300 5
+run dcryolike/tests/test_physical_noise.py "physical noise gen"  300 3
 run dcryolike/tests/test_grids.py      "adaptive shell grids" 600 5
 run dcryolike/tests/test_refine.py     "pose refinement"      900 5
 run dcryolike/tests/test_proposal.py   "proposal features/net" 600 5

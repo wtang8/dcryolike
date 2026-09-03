@@ -120,7 +120,14 @@ def make_ctf(polar_grid, n, box_size, seed=0, device="cuda", dtype=torch.float64
 
 def generate(volume, polar_grid, n_particles, snr, box_size=None, seed=0,
              backend="nufft", ctf_kwargs=None, device="cuda"):
-    """Generate a noisy particle stack from a volume. See module docstring for SNR."""
+    """Generate a noisy particle stack from a volume. See module docstring for SNR.
+
+    WARNING (review, 2026-09-02): the noise here is iid per polar grid point,
+    which is UNPHYSICAL -- no real-space noise field produces it -- and reads
+    far easier than real noise at the same nominal SNR (top-1 at "SNR 0.05":
+    17.5% here vs 0% with physical noise). Kept only so earlier experiments
+    remain reproducible. Use generate_physical() for anything new.
+    """
     D = volume.shape[-1]
     box_size = float(D) if box_size is None else box_size
     dtype = volume.dtype
@@ -154,3 +161,89 @@ def generate(volume, polar_grid, n_particles, snr, box_size=None, seed=0,
     images = clean + noise * sigma[:,None,None]
 
     return Particles(images, clean, azimus, polars, gammas, ctf, sigma, snr)
+
+
+# ---------------------------------------------------------------------------
+# REVIEW FIX: physically correct noise.
+#
+# The iid-per-grid-point noise in generate() is UNPHYSICAL. Real cryo-EM noise
+# is white in real space; its Fourier transform sampled on a polar grid has
+# uniform variance but is strongly CORRELATED between nearby points (measured:
+# 1.000 between adjacent inner-shell points, 0.48 mid-shell). No real-space
+# field produces independent per-point polar noise. CryoLike's quadrature
+# weighting is the matched filter for the physical case (verified: weighted CC
+# beats unweighted under real-space white noise, loses under iid), so the
+# generator, not the likelihood, was wrong.
+#
+# SNR here is defined in REAL SPACE, per pixel, over the whole box, on the
+# CTF-free projection: snr = var(projection pixels) / var(noise pixels).
+# This is comparable to literature figures; the polar per-point convention
+# in generate() is not, and reads much easier than it is.
+# ---------------------------------------------------------------------------
+
+def _polar_dft_matrix(polar_grid, D, device, dtype=torch.complex128):
+    """Exact DFT from a D x D real-space image to the polar Fourier points."""
+    kx = torch.tensor(polar_grid.x_points, dtype=torch.float64, device=device)
+    ky = torch.tensor(polar_grid.y_points, dtype=torch.float64, device=device)
+    ax = torch.arange(D, dtype=torch.float64, device=device) - D // 2
+    X, Y = torch.meshgrid(ax, ax, indexing="ij")
+    ph = (-2j * np.pi / D) * (kx[:, None] * X.reshape(1, -1) + ky[:, None] * Y.reshape(1, -1))
+    return torch.exp(ph.to(dtype)) / D
+
+
+def real_space_projections(volume, azimus, polars, gammas, device="cuda"):
+    """CTF-free real-space projections, via a Cartesian Fourier slice + ifft2."""
+    D = volume.shape[-1]; n = azimus.shape[0]
+    f = torch.arange(D, dtype=volume.dtype, device=device) - D // 2
+    KX, KY = torch.meshgrid(f, f, indexing="ij")
+    circ = torch.stack([KX.reshape(-1), KY.reshape(-1), torch.zeros(D * D, dtype=volume.dtype, device=device)], -1)
+    # rotate the Cartesian slice plane with the same R = Rz(a) Ry(b) Rz(g) as fourier_circles
+    ca, sa = torch.cos(azimus), torch.sin(azimus)
+    cb, sb = torch.cos(polars), torch.sin(polars)
+    cg, sg = torch.cos(gammas), torch.sin(gammas)
+    Rz_a = torch.stack([torch.stack([ca, -sa, 0*ca], -1), torch.stack([sa, ca, 0*ca], -1), torch.stack([0*ca, 0*ca, 1+0*ca], -1)], -2)
+    Ry_b = torch.stack([torch.stack([cb, 0*cb, sb], -1), torch.stack([0*cb, 1+0*cb, 0*cb], -1), torch.stack([-sb, 0*cb, cb], -1)], -2)
+    Rz_g = torch.stack([torch.stack([cg, -sg, 0*cg], -1), torch.stack([sg, cg, 0*cg], -1), torch.stack([0*cg, 0*cg, 1+0*cg], -1)], -2)
+    R = Rz_a @ Ry_b @ Rz_g
+    pts = torch.einsum('bij,pj->bpi', R, circ)
+    F = slice_nufft(volume, pts).reshape(n, D, D)
+    img = torch.fft.fftshift(torch.fft.ifft2(torch.fft.ifftshift(F, dim=(-2, -1)), norm="ortho"), dim=(-2, -1)).real
+    return img
+
+
+def generate_physical(volume, polar_grid, n_particles, snr_real, box_size=None, seed=0,
+                      ctf_kwargs=None, device="cuda"):
+    """Like generate(), but with real-space white noise and a real-space SNR."""
+    D = volume.shape[-1]
+    box_size = float(D) if box_size is None else box_size
+    dtype = volume.dtype
+
+    azimus, polars, gammas = uniform_so3(n_particles, seed, device, dtype)
+    thetas = torch.tensor(polar_grid.theta_shell, dtype=dtype, device=device)
+    radii = torch.tensor(polar_grid.radius_shells, dtype=dtype, device=device)
+    tmpl = slice_nufft(volume, slice_points(fourier_circles(thetas, polars, azimus, gammas), radii))
+    tmpl = tmpl.reshape(n_particles, polar_grid.n_shells, polar_grid.n_inplanes)
+    ctf = make_ctf(polar_grid, n_particles, box_size, seed=seed, device=device, dtype=dtype,
+                   **(ctf_kwargs or {}))
+    clean = tmpl * ctf
+
+    # real-space signal variance per pixel, CTF-free projection
+    proj = real_space_projections(volume, azimus, polars, gammas, device)
+    sig_var = proj.var(dim=(1, 2))
+    noise_std = torch.sqrt(sig_var / snr_real)                     # per particle
+
+    gen = torch.Generator(device=device).manual_seed(seed + 99991)
+    nreal = torch.randn(n_particles, D * D, generator=gen, dtype=dtype, device=device)
+    nreal = nreal * noise_std[:, None]
+    M = _polar_dft_matrix(polar_grid, D, device)
+    npol = (nreal.to(torch.complex128) @ M.T).reshape(n_particles, polar_grid.n_shells,
+                                                       polar_grid.n_inplanes).to(clean.dtype)
+    # the polar DFT above and slice_nufft share the exp(-2 pi i k.x/D)/D convention
+    # only up to a D-dependent scale; calibrate so a CTF-free clean image and its
+    # own real-space projection agree in polar power
+    ref = (M @ proj.reshape(n_particles, -1).to(torch.complex128).T).T.reshape_as(npol)
+    scale = torch.sqrt((tmpl.abs() ** 2).sum(dim=(1, 2)) / (ref.abs() ** 2).sum(dim=(1, 2)))
+    npol = npol * scale[:, None, None]
+
+    images = clean + npol
+    return Particles(images, clean, azimus, polars, gammas, ctf, noise_std, snr_real)
