@@ -14,22 +14,38 @@
 > 2. On real-space white noise transformed exactly to the polar grid, the
 >    weighted CC wins. **CryoLike's quadrature weighting is correct; the
 >    generator was wrong.**
-> 3. Corrected ceiling (physical noise, real-space per-pixel SNR, D=48):
+> 3. Corrected ceiling (physical noise, real-space per-pixel SNR). **Box size dominates:**
 >
->    |  SNR  | top-1 old → new | @500 old → new |
->    |------|-----------------|----------------|
->    | 1.00 | 94.0% → 47.0%   | 100% → 100%    |
->    | 0.10 | 35.0% → 1.0%    | 99.5% → 48.0%  |
->    | 0.05 | 17.5% → 0.0%    | 95.5% → 19.5%  |
+>    | SNR | D=48 top-1 | D=48 @500 | **D=96 top-1** | **D=96 @100** | **D=96 @500** | D=96 top-1 err |
+>    |----|-----------|-----------|----------------|---------------|---------------|----------------|
+>    | 0.30 | 12.5% | 88.5% | **82.5%** | 100% | 100% | 0.8° |
+>    | 0.10 | 1.5% | 47.0% | **57.5%** | 100% | 100% | 1.3° |
+>    | 0.05 | 0.0% | 19.5% | **33.0%** | **96.5%** | **98.5%** | 2.0° |
+>    | 0.02 | 0.0% | 11.0% | 12.0% | 54.0% | 68.0% | 29.6° |
 >
-> **What survives:** the estimator-vs-proposal gap (at SNR 0.3: 13.5% top-1 vs
-> 88.5% @500), the SNR^-0.5 precision law (Cramér-Rao form is noise-model
+>    (D=96: 30,522 views @ 1.19°, tol 1.49° — a *stricter* tolerance than D=48's 2.98°.
+>    In-mask SNR ≈ 1.1× whole-box for this phantom, so the conventions nearly coincide.)
+>
+>    **The estimator-vs-proposal gap survives physical noise at realistic box size:** at
+>    SNR 0.05, D=96, top-1 33% vs recall@100 96.5%. Doubling k_max took top-1 at 0.05
+>    from 0% to 33% — consistent with the ~k_max^2.7 information scaling measured earlier.
+>    Note the coincidence: the ORIGINAL unphysical D=48 numbers (17.5% / 95.5%) landed near
+>    the physical D=96 numbers because two errors partly cancelled (noise too easy, box too
+>    small). That is not a vindication of the original; it is why it looked plausible.
+>
+> **What survives:** the estimator-vs-proposal gap (now confirmed at D=96 under physical
+> noise, see table), the SNR^-0.5 precision law (Cramér-Rao form is noise-model
 > independent), grid-independence of refinement, the antipodal degeneracy
 > (pure algebra), the deconvolution negative result (information-theoretic).
 > **What does not:** every specific number; the network-vs-ceiling gap (trained
 > on unphysical noise); the mixture margins (posterior `beta` was calibrated
 > under the wrong noise model). The D=48 corrected numbers are ALSO not
 > representative — real boxes are 5× larger and information grows ~k_max^2.7.
+>
+> **Ceiling re-established at D=96 (done 2 Sep):** `tests/recall_ceiling_physical_boxsize.py`.
+> Memory note: P=512 at D=96 puts the bank at 6.1 GB; the run peaked near the 16 GB limit.
+> `recall_ceiling_physical_boxsize_lowmem.py` (P=256, smaller chunks, run with `python -u`)
+> is the fallback if a larger D or N is attempted.
 >
 > **Fix landed:** `generator.generate_physical()` — real-space white noise,
 > exact DFT to polar, real-space SNR (whole box, CTF-free projection).
@@ -115,9 +131,18 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**Changed by the review.** Before anything else, re-establish the ceiling under physical noise at a
-realistic box size — the D=48 corrected numbers are as unrepresentative (too hard) as the old ones
-were (too easy). Only after that is any downstream experiment worth re-running.
+**The D=96 physical-noise ceiling is done** (table in the review block). The downstream experiments
+that the review invalidated can now be re-run against a trustworthy baseline. Two candidates, in
+order of value:
+
+1. **Mixture vs argmax, half-set cross-referenced, under physical noise.** This is the live
+   scientific thread and its old margins were calibrated under the wrong noise model. Start at
+   D=48, SNR 0.3 (physical) — from the table that is the "ambiguous but not hopeless" regime
+   (top-1 12.5%, @500 88.5%) where marginalisation should matter most. Then D=96 if informative.
+   `beta` in the posterior must be recomputed from `generate_physical`'s `sigma_noise`, which is
+   now a real-space std — the old formula `||y||^2/(2 sigma^2)` assumed per-point polar sigma.
+2. **Proposal network gap under physical noise at D=96.** Cheaper (~7 min train) but lower value
+   given the review's finding that the coarse search is already inexpensive.
 
 ```
 ./dcryolike/run_tests.sh
@@ -125,14 +150,15 @@ were (too easy). Only after that is any downstream experiment worth re-running.
 
 Then paste into a new session:
 
-> Read `HANDOFF.md` (the REVIEW FINDING block first) and `dcryolike/README.md` in /home/wtang/cryoem.
-> The synthetic noise model was found to be unphysical and has been replaced by
-> `generator.generate_physical()`. Re-establish the recall ceiling under physical noise at
-> D=96 and D=128 (see `tests/recall_sweep_physical.py` for the D=48 version and
-> `tests/capture_vs_box.py` for how larger boxes were handled before), using real-space
-> per-pixel SNR in both whole-box and in-mask conventions. Report top-1 and recall@K at
-> SNR 1.0, 0.3, 0.1, 0.05. That table replaces the one in the artifact. Only then
-> continue the marginalisation thread below.
+> Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
+> `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
+> `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
+> Now re-run the mixture-vs-argmax comparison under physical noise. Port
+> `tests/iterative_halfset.py` to `generate_physical` at D=48, SNR 0.3 and 0.1 (physical,
+> real-space). Recompute the posterior temperature: `sigma_noise` is now a real-space
+> per-pixel std, so derive beta from the polar-domain noise power actually present in the
+> images (measure it from `images_fourier - clean_fourier` rather than assuming a formula).
+> Keep the cross-referenced half-set protocol and score against ground truth.
 > Continue the marginalisation thread. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
