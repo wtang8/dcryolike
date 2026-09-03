@@ -42,6 +42,22 @@
 > under the wrong noise model). The D=48 corrected numbers are ALSO not
 > representative — real boxes are 5× larger and information grows ~k_max^2.7.
 >
+> **Mixture vs argmax RE-RUN under physical noise (done 2 Sep)** — `tests/iterative_halfset_physical.py`,
+> D=48, cross-referenced half-sets, posterior temperature re-derived (C measured from pure
+> noise = 0.786; the old iid formula was 27% too cold). **The marginalisation result survives:**
+>
+>    | SNR (physical) | mixture − argmax, mean FSC | relative | peak iter |
+>    |----------------|----------------------------|----------|-----------|
+>    | 0.3 | +0.0075 to +0.0109 | +1.7% to +2.4% | 2 |
+>    | 0.1 | +0.0091 to +0.0146 | +2.5% to +4.1% | 2–3 |
+>
+>    Margin grows as SNR falls (more ambiguity → more to gain from marginalising). Argmax
+>    decays faster after its peak (−3.6% vs −2.0% at SNR 0.1). Half-map FSC tracks truth
+>    within a shell, so the gold-standard estimate stays honest. **Both branches still
+>    overfit after iteration 2–3** — the low-pass-between-iterations control remains the
+>    missing ingredient. Same direction and magnitude as the pre-review +2–6%, so that
+>    finding was right for the wrong reason and is now right for the right one.
+>
 > **Ceiling re-established at D=96 (done 2 Sep):** `tests/recall_ceiling_physical_boxsize.py`.
 > Memory note: P=512 at D=96 puts the bank at 6.1 GB; the run peaked near the 16 GB limit.
 > `recall_ceiling_physical_boxsize_lowmem.py` (P=256, smaller chunks, run with `python -u`)
@@ -131,18 +147,18 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**The D=96 physical-noise ceiling is done** (table in the review block). The downstream experiments
-that the review invalidated can now be re-run against a trustworthy baseline. Two candidates, in
-order of value:
+**Both post-review re-runs are done** (D=96 ceiling; mixture vs argmax under physical noise —
+tables in the review block). The marginalisation result stands. What remains, in order of value:
 
-1. **Mixture vs argmax, half-set cross-referenced, under physical noise.** This is the live
-   scientific thread and its old margins were calibrated under the wrong noise model. Start at
-   D=48, SNR 0.3 (physical) — from the table that is the "ambiguous but not hopeless" regime
-   (top-1 12.5%, @500 88.5%) where marginalisation should matter most. Then D=96 if informative.
-   `beta` in the posterior must be recomputed from `generate_physical`'s `sigma_noise`, which is
-   now a real-space std — the old formula `||y||^2/(2 sigma^2)` assumed per-point polar sigma.
-2. **Proposal network gap under physical noise at D=96.** Cheaper (~7 min train) but lower value
-   given the review's finding that the coarse search is already inexpensive.
+1. **The low-pass control.** Every iterative run — old and new, shared and cross-referenced —
+   peaks at iteration 2–3 and decays. That is the reference sharpening past what the data
+   supports. Low-pass each half-map at its own FSC-vs-truth cutoff (or a fixed schedule) before
+   it becomes the next bank. If the decay disappears and the mixture margin holds, the
+   marginalisation result is clean; if the margin vanishes, it was partly an overfitting artefact.
+2. **Mixture at D=96.** Confirms the margin at realistic box size. Heavy: 8000 particles × 10
+   modes × 25k points scattered into 96³. Use the lowmem pattern; expect ~30 min.
+3. **Proposal network gap under physical noise at D=96.** Lowest value — the review showed the
+   coarse search is already cheap.
 
 ```
 ./dcryolike/run_tests.sh
@@ -153,13 +169,14 @@ Then paste into a new session:
 > Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
 > `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
 > `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
-> Now re-run the mixture-vs-argmax comparison under physical noise. Port
-> `tests/iterative_halfset.py` to `generate_physical` at D=48, SNR 0.3 and 0.1 (physical,
-> real-space). Recompute the posterior temperature: `sigma_noise` is now a real-space
-> per-pixel std, so derive beta from the polar-domain noise power actually present in the
-> images (measure it from `images_fourier - clean_fourier` rather than assuming a formula).
-> Keep the cross-referenced half-set protocol and score against ground truth.
-> Continue the marginalisation thread. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
+> The mixture-vs-argmax comparison has been re-run under physical noise
+> (`tests/iterative_halfset_physical.py`) and the margin survives (+2–4% mean FSC). Both
+> branches still peak at iteration 2–3 and decay. Add the low-pass control: before each
+> half-map becomes the next pose-search bank, low-pass it at a cutoff derived from that
+> half-map's own FSC (against truth for this synthetic study; note that a real pipeline would
+> use half-map FSC). Re-run at SNR 0.3 and 0.1 and report whether the decay disappears and
+> whether the mixture margin survives. Keep cross-referenced half-sets, score against truth,
+> keep the measured-C posterior temperature. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
 > mixture-vs-argmax comparison.
