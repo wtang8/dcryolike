@@ -173,8 +173,12 @@ else:
     pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=64,uniform=True)
     p0=generate_physical(vol,pg,24,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))
     p1=generate_physical_hetero([vol],[0.0],torch.zeros(24,dtype=torch.long),pg,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))
-    same=torch.equal(p0.images_fourier,p1.images_fourier) and torch.equal(p0.ctf,p1.ctf)
-    print(f"  homogeneous limit bit-identical: {_v(same)}")
+    # clean signal, CTF and poses are bit-identical; the noise scale differs at
+    # ~1e-15 relative because the projection variance is computed on a subset
+    # copy (different NUFFT batch), so the images are compared to 1e-12
+    same=(torch.equal(p0.clean_fourier,p1.clean_fourier) and torch.equal(p0.ctf,p1.ctf)
+          and torch.allclose(p0.images_fourier,p1.images_fourier,rtol=1e-12,atol=0))
+    print(f"  homogeneous limit reproduces generate_physical (clean/CTF exact, images to 1e-12): {_v(same)}")
     v1,_=hinge_phantom(D,math.radians(30),device=dev)
     conf=torch.arange(24,device=dev)%2
     p2=generate_physical_hetero([vol,v1],[0.0,math.radians(30)],conf,pg,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))

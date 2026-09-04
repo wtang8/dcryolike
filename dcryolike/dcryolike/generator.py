@@ -314,7 +314,9 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
 
     Poses, CTFs and noise are drawn for the whole stack in one stream, exactly
     as generate_physical() draws them, so a homogeneous stack (all conf equal,
-    volumes=[vol]) reproduces generate_physical(vol, ...) bit for bit. The
+    volumes=[vol]) reproduces generate_physical(vol, ...): clean signal, CTF and
+    poses bit for bit, images to ~1e-15 relative (the noise scale comes from a
+    projection computed in a different NUFFT batch). The
     noise level is set per particle from ITS OWN conformation's projection
     variance, so the real-space SNR is the same for every conformation.
     """
