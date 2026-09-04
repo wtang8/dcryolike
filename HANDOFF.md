@@ -108,6 +108,39 @@
 >      every iteration. Protocols tested: contaminated (artefact), decontaminated, shared-ref
 >      (self-reinforcement artefact), cross-ref, GOLD. Direction consistent in all four valid ones.
 >
+> **GOLD + LOWPASS RUN (2 Sep) — NEGATIVE, decisively.** Low-passing each half-map at its
+> half-map FSC 0.5 crossing before it becomes the next bank, under gold standard:
+>
+>    | | GOLD raw ref, iter1→6 | GOLD + LP, iter1→6 | half-map |
+>    |---|---|---|---|
+>    | SNR 0.3 argmax | 0.4435→0.4394 (−0.9%) | 0.4435→**0.4213 (−5.0%)** | 10p honest |
+>    | SNR 0.3 mixture | 0.4518→0.4440 (−1.7%) | 0.4518→**0.4275 (−5.4%)** | 10p honest |
+>    | SNR 0.1 argmax | 0.3616→0.3578 (−1.1%) | 0.3616→**0.3340 (−7.6%)** | 9p honest |
+>    | SNR 0.1 mixture | 0.3711→0.3651 (−1.6%) | 0.3711→**0.3339 (−10.0%)** | 9p honest |
+>
+>    - The FSC inflation is gone (GOLD works), but the map quality falls 5–10% instead of 1–2%.
+>    - **Why:** the half-map FSC 0.5 crossing is a CONSERVATIVE estimate under gold standard
+>      (that is what makes it honest). Cutting the reference there removes REAL signal — at
+>      SNR 0.3 the map is good to 11p and the cut is at 10p. Worse reference → worse poses →
+>      lower FSC → tighter cut (10→9p at SNR 0.1) → a downward spiral. The opposite failure
+>      from the cross-ref run, same root cause: a hard cutoff driven by half-map FSC feeds back.
+>    - **The mixture margin collapses to zero** at SNR 0.1 by iter 4 (0.3429 vs 0.3429). A
+>      low-resolution reference makes every pose ambiguous, so spreading over basins becomes
+>      uniform smearing. The margin needs a reference good enough to discriminate.
+>    - A hard cut at FSC 0.5 is NOT what real pipelines do — RELION weights the reference
+>      smoothly by per-shell SSNR and only uses 0.143 for the final claim. This control was
+>      the crude version and the result shows why the crude version is wrong.
+>
+> **REINTERPRETATION of the residual decline.** Iteration 1 poses are estimated against a
+> low-passed TRUTH volume — clean, noise-free. Every later iteration uses a real noisy
+> reconstruction. So the drop from iter 1 is mostly the loss of a privileged clean reference,
+> not pipeline instability. Under GOLD raw-ref, iter 2→6 is only −0.6% (argmax) / −1.6%
+> (mixture) at SNR 0.3. **The pipeline is effectively stable from iteration 2.** The "decay"
+> question is closed: the remaining 0.5–1.5% is noise accumulation at the level one expects.
+>
+> **PROTOCOL VERDICT: gold standard with the raw, unfiltered reference is the best tested.**
+> Honest FSC, stable from iter 2, mixture margin intact (+1–2.6%).
+>
 > **Frequency marching RE-RUN under physical noise (2 Sep)** — `adaptive_sampling_physical.py`.
 > Coarse stage k_cut=6 (8 shells, 9.5° grid, 662 views, **0.8% of full cost**), truth within
 > one coarse cell of a top-100 candidate: SNR 1.0 **100%**, 0.3 **92%**, 0.1 **66%**. Viable at
@@ -210,20 +243,27 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**Gold standard confirmed cross-referencing as the cause of the peak, most of the decay, and the
-FSC inflation** (review block). The protocol is now trustworthy: GOLD mode gives honest half-map
-FSC. A residual slow decline (~1–2% over 6 iterations) remains, from poses chasing noise in the
-raw reference. In order of value:
+**The diagnostic phase is complete.** GOLD + raw reference is the protocol: honest FSC, stable
+from iteration 2, mixture margin intact. The low-pass control was tested twice and failed both
+ways (inflation under cross-ref; a 5–10% downward spiral under gold). The residual decline is
+mostly the privileged clean initial reference. What remains is confirmation and engineering,
+not diagnosis:
 
-1. **GOLD + LOWPASS.** The low-pass control failed under cross-ref because inflated half-map
-   FSC fed back into the cutoff. Under GOLD the FSC is honest, so the feedback loop is gone.
-   If the residual decline disappears, the pipeline is stable and every number is clean. If
-   not, try the soft version: per-shell SSNR weighting of the reference (RELION-style), which
-   down-weights unreliable shells smoothly instead of cutting them. Note: this is for the
-   ITERATIVE loop only — the ceiling (truth templates, white noise) is already optimal.
-2. **Mixture at D=96, GOLD protocol.** Confirms the margin at realistic box size on the
-   trustworthy protocol. Heavy (~30 min); use the lowmem pattern.
-3. **Cut refinement cost** (99% of per-iteration time).
+1. **Mixture at D=96, GOLD raw-ref protocol.** The margin is a D=48 result; D=96 is what
+   transfers. Heavy (~30 min uncontended); use the lowmem pattern. This is the last
+   measurement the marginalisation claim needs.
+2. **Soft SSNR weighting of the reference** (RELION-style, per-shell, smooth). The only
+   principled version of the reference-filtering idea left untested. Expected gain is small
+   (recovering ≤1–2%), and it risks the same spiral if the weighting is too aggressive. Low
+   priority unless (1) shows the margin is reference-quality-limited at D=96.
+3. **Cut refinement cost** (99% of per-iteration time): fewer steps, top mode only, every
+   Nth iteration.
+4. **Write-up.** The body of validated results is now substantial: differentiable CryoLike with
+   analytic adjoints; the physical-noise ceiling at D=96; precision without a resolution floor;
+   grid-independence of refinement; the antipodal degeneracy; deconvolution impossibility;
+   marginalisation margin across five protocols; and the protocol lessons (contamination,
+   noise model, cross-referencing, hard low-pass). That is a paper's worth of negative and
+   positive results.
 
 ```
 ./dcryolike/run_tests.sh
@@ -234,14 +274,15 @@ Then paste into a new session:
 > Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
 > `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
 > `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
-> True gold standard (`GOLD=1` in `tests/iterative_halfset_physical.py`) confirmed that
-> cross-referencing caused the iteration-2 peak and the half-map FSC inflation; under GOLD
-> the FSC is honest and a gentle ~1–2% decline over 6 iterations remains. Now run
-> `GOLD=1 LOWPASS=1` at SNR 0.3 and 0.1: with honest half-map FSC the feedback loop that
-> broke the low-pass control is gone. Report per iteration truth FSC, half-map FSC, mean
-> FSC, and the cutoff, for argmax and mixture. Does the residual decline disappear? Does
-> the mixture margin hold? Keep the measured-C posterior temperature and score against
-> truth. Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
+> The diagnostic phase is complete (HANDOFF review block, "PROTOCOL VERDICT"). GOLD + raw
+> reference is the protocol. Now confirm the marginalisation margin at realistic box size:
+> port `tests/iterative_halfset_physical.py` to D=96 using the memory pattern from
+> `tests/recall_ceiling_physical_boxsize_lowmem.py` (P=256, chunked bank, complex64,
+> `python -u`), run `GOLD=1 LOWPASS=0` at physical SNR 0.1 and 0.05 with 8000 particles,
+> 6 iterations. Report per iteration truth FSC, half-map FSC, mean FSC for argmax and
+> mixture, and the margin. Keep the measured-C posterior temperature. If the margin holds
+> at D=96, the marginalisation claim is complete; if it vanishes, report that plainly.
+> Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
 > half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
 > peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
 > mixture-vs-argmax comparison.
