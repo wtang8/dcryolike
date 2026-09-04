@@ -176,6 +176,23 @@ disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
 
 ## 1. Current State
 
+**2026-09-04 (afternoon), heterogeneous reconstruction prepared, not yet run on the GPU.**
+Plan (linear latent model, exact marginalisation of gain+latent per pose, heterogeneity enters
+AFTER the V0 shortlist) is implemented and unit-verified on the CPU. New files:
+`dcryolike/hetero.py` (Gram-over-all-gamma, closed-form marginal, per-voxel (K+1)x(K+1) M-step,
+PCA gauge, rotation-leakage diagnostic), `dcryolike/pipeline.py` (Bank/select_modes/reconstruct
+lifted from the halfset script), `generator.hinge_phantom` + `generate_physical_hetero`,
+`tests/test_hetero.py` (14 checks, runs with `CUDA_VISIBLE_DEVICES=`), and three scripts:
+`tests/hetero_gate0.py` (D=96 recall vs arm swing, consensus bank), `tests/hetero_classes_pilot.py`
+(stage 2), `tests/hetero_linear_pilot.py` (stage 3). Both pilots execute end to end on the CPU
+through the gridding backend (`DEV=cpu BACKEND=gridding SMOKE=1`); their NUFFT/GPU path is
+untested. The phantom refactor is bit-identical to the previous `gaussian_atom_volume`.
+
+**WSL crashes today (14:24, 15:05, 15:25, 15:31) were host-RAM OOM kills** of the four-worker
+`measure_pose_search` job (5 x ~2 GB in a 15.9 GB VM), not dcryolike. Run heavy scripts under
+`systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 ...` and not concurrently with
+that job.
+
 **Implemented and verified — 11 suites / 50 assertions, `./dcryolike/run_tests.sh` → ALL GREEN.**
 Relocatable: suite and harness both verified running from a foreign checkout invoked from `/`.
 
@@ -242,6 +259,23 @@ coverage metric inspected padding columns; `|FFT_θ|` is provably identical for 
 bank drawn from ground truth. Each was caught only by a check with a *predictable* answer.
 
 ## 3. Exact Next Action
+
+**Heterogeneous reconstruction, gate zero** (as soon as the GPU is free):
+
+```
+systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 \
+    venv/bin/python -u dcryolike/tests/hetero_gate0.py
+```
+
+It prints recall@K of the consensus-volume bank at D=96 for arm swings of 0, +-10, +-30 degrees
+at physical SNR 0.3 / 0.1 / 0.05 (the swing-0 rows must reproduce the D=96 table above). The
+decision: flat recall@100 across swing means the shortlist survives motion and the plan stands
+(run `hetero_classes_pilot.py`, then `hetero_linear_pilot.py` with `K=0` and `K=1` at SNR 0.1
+and compare the `V(z)` and `half` columns to `V0`); a collapse means the search itself must be
+class-aware. Before either pilot, run `GPU: ./dcryolike/run_tests.sh` (test_hetero TEST 7 is the
+generator bridge, GPU-only) and a `SMOKE=1` pilot on the GPU to shake out the NUFFT path.
+
+Previously queued (still valid, lower priority now):
 
 **The diagnostic phase is complete.** GOLD + raw reference is the protocol: honest FSC, stable
 from iteration 2, mixture margin intact. The low-pass control was tested twice and failed both

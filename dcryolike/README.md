@@ -47,6 +47,21 @@ Paths are resolved relative to each file, so the tree runs from any location
 (verified by running the suite from a relocated checkout). If the reference
 package lives elsewhere, set `CRYOLIKE_SRC` to its `src/` directory.
 
+## Heterogeneous reconstruction (prepared; GPU path untested)
+
+`dcryolike/hetero.py` implements the linear latent model V(z) = V0 + sum z_k U_k with the
+gain and z integrated out in closed form per pose, Gram matrices over every in-plane
+rotation by FFT, a per-voxel (K+1)x(K+1) M-step on the trilinear splat, the PCA gauge and
+a rotation-leakage diagnostic. `tests/test_hetero.py` verifies each piece against a
+brute-force reference (numerical integration, explicit rotation, explicit loop, two-class
+equivalence) and runs on the CPU:
+
+    CUDA_VISIBLE_DEVICES= venv/bin/python dcryolike/tests/test_hetero.py
+
+`tests/hetero_gate0.py`, `tests/hetero_classes_pilot.py` and `tests/hetero_linear_pilot.py`
+are the staged experiments; the pilots smoke-run on the CPU with
+`DEV=cpu BACKEND=gridding SMOKE=1` (gridding is an approximation used only to exercise the code).
+
 ## Environment
 
 `requirements.txt` is pinned. The non-obvious constraint: **torch must come from
