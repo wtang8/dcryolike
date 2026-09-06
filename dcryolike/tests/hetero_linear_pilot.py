@@ -97,7 +97,7 @@ if ORACLE:
     cpo=p.polars.clone(); caz=p.azimus.clone(); V=NP
     G_ORACLE=torch.zeros(NP,NP,dtype=torch.float64,device=dev); G_ORACLE[torch.arange(NP,device=dev),torch.arange(NP,device=dev)]=p.gammas
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
-p.clean_fourier=None; torch.cuda.empty_cache()        # not needed past the temperature; 1.6 GB at D=96
+torch.cuda.empty_cache()   # (the generator already builds the noisy stack in place; clean_fourier is None)
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
 shells=ShellMasks(D,dev); prior_prec=torch.tensor([0.0]+[1.0]*K,dtype=torch.float64,device=dev)
 

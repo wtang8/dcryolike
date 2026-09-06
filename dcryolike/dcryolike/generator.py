@@ -145,13 +145,24 @@ def make_ctf(polar_grid, n, box_size, seed=0, device="cuda", dtype=torch.float64
 
     r = torch.tensor(polar_grid.radius_shells, dtype=dtype, device=device) * 2.0/box_size
     th = torch.tensor(polar_grid.theta_shell, dtype=dtype, device=device)
-    local_df = defocus[:,None,None] + astigm[:,None,None]*torch.cos(2*(th[None,None,:]-dfang[:,None,None]))
     r2 = (r**2)[None,:,None]
-    gamma = -np.pi*lam*r2*local_df + (np.pi/2)*Cs*lam**3*(r2**2)
-    ctf = -np.sqrt(1-amp_contrast**2)*torch.sin(gamma) + amp_contrast*torch.cos(gamma)
-    if bfactor is not None:
-        ctf = ctf * torch.exp(-bfactor * r2 / 4.0)
-    return ctf
+    S, P = polar_grid.n_shells, polar_grid.n_inplanes
+    n_out = defocus.shape[0]
+    out = torch.empty(n_out, S, P, dtype=dtype, device=device)
+    # chunked over particles: three (n,S,P) trig temporaries live at once, 1.6 GB
+    # each at n=16000, D=96. Elementwise arithmetic, so the result is bit-for-bit
+    # the one-shot version (asserted in test_ctf against cryolike's reference).
+    step = max(1, int(2e8 // max(1, S * P)))
+    for i in range(0, n_out, step):
+        j = min(i + step, n_out)
+        local_df = defocus[i:j,None,None] + astigm[i:j,None,None]*torch.cos(2*(th[None,None,:]-dfang[i:j,None,None]))
+        gamma = -np.pi*lam*r2*local_df + (np.pi/2)*Cs*lam**3*(r2**2)
+        c = -np.sqrt(1-amp_contrast**2)*torch.sin(gamma) + amp_contrast*torch.cos(gamma)
+        if bfactor is not None:
+            c = c * torch.exp(-bfactor * r2 / 4.0)
+        out[i:j] = c
+        del local_df, gamma, c
+    return out
 
 
 def generate(volume, polar_grid, n_particles, snr, box_size=None, seed=0,
@@ -304,6 +315,11 @@ def generate_physical(volume, polar_grid, n_particles, snr_real, box_size=None, 
 class HeteroParticles(Particles):
     conf: torch.Tensor = None      # (n,) long, index into the conformation list
     t: torch.Tensor = None         # (n,) the latent value each conformation was built at
+    noise_norm_w: torch.Tensor = None   # (n,) quadrature-weighted norm of the realised noise,
+    # accumulated during generation. Its only consumer is pipeline.temperature(), which needed
+    # the whole noiseless stack (3.2 GB at n=16000, D=96) purely to recover this one number per
+    # particle. With it present, `clean_fourier` may be None and the noisy stack is built in
+    # place over the signal buffer.
 
 
 def _slice(volume, pts, backend="nufft"):
@@ -363,17 +379,27 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     nreal = torch.randn(n_particles, D * D, generator=gen, dtype=dtype, device=device)
     nreal = nreal * noise_std[:, None]
     M = _polar_dft_matrix(polar_grid, D, device)
+    wq = torch.tensor(polar_grid.integration_weight_points, dtype=dtype,
+                      device=device).reshape(S, P)
+    noise_norm_w = torch.empty(n_particles, dtype=dtype, device=device)
     # chunked: the (n, S*P) complex128 products peak at ~10 GB for 8000 particles
-    # at D=96 if done in one go; the per-particle result is identical
-    images = torch.empty_like(clean)
+    # at D=96 if done in one go; the per-particle result is identical.
+    # The noise is added INTO the signal buffer and its weighted norm accumulated,
+    # so no second (n,S,P) stack is allocated (3.2 GB at n=16000, D=96) and the
+    # noiseless stack need not be retained.
     for i in range(0, n_particles, chunk):
         j = min(i + chunk, n_particles)
         npol = (nreal[i:j].to(torch.complex128) @ M.T).reshape(j - i, S, P).to(clean.dtype)
         ref = (M @ proj[i:j].reshape(j - i, -1).to(torch.complex128).T).T.reshape_as(npol)
         scale = torch.sqrt(tmpl_pow[i:j] / (ref.abs() ** 2).sum(dim=(1, 2)))
-        images[i:j] = clean[i:j] + npol * scale[:, None, None]
-        del npol, ref
+        npol *= scale[:, None, None]
+        noise_norm_w[i:j] = (npol.abs() ** 2 * wq).sum(dim=(1, 2))
+        clean[i:j] += npol                      # in place: `clean` becomes the noisy stack
+        del npol, ref, scale
     del M, nreal, proj
+    images = clean                              # same storage, renamed for clarity
     t_values = torch.as_tensor(t_values, dtype=dtype, device=device)
-    return HeteroParticles(images, clean, azimus, polars, gammas, ctf, noise_std, snr_real,
-                           conf=conf, t=t_values[conf])
+    # clean_fourier is None: the noiseless stack was overwritten in place. Everything
+    # that consumed it (the temperature) now reads noise_norm_w instead.
+    return HeteroParticles(images, None, azimus, polars, gammas, ctf, noise_std, snr_real,
+                           conf=conf, t=t_values[conf], noise_norm_w=noise_norm_w)

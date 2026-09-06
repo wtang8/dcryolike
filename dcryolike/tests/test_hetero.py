@@ -173,19 +173,28 @@ else:
     pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=64,uniform=True)
     p0=generate_physical(vol,pg,24,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))
     p1=generate_physical_hetero([vol],[0.0],torch.zeros(24,dtype=torch.long),pg,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))
-    # clean signal, CTF and poses are bit-identical; the noise scale differs at
-    # ~1e-15 relative because the projection variance is computed on a subset
-    # copy (different NUFFT batch), so the images are compared to 1e-12
-    same=(torch.equal(p0.clean_fourier,p1.clean_fourier) and torch.equal(p0.ctf,p1.ctf)
+    # generate_physical_hetero builds the noisy stack in place and returns
+    # clean_fourier=None, carrying the weighted noise norm instead; the CTF and
+    # poses are bit-identical and the images agree to 1e-12 (the noise scale
+    # differs at ~1e-15 relative because the projection variance is computed on a
+    # subset copy, i.e. a different NUFFT batch).
+    same=(p1.clean_fourier is None and torch.equal(p0.ctf,p1.ctf)
           and torch.allclose(p0.images_fourier,p1.images_fourier,rtol=1e-12,atol=0))
-    print(f"  homogeneous limit reproduces generate_physical (clean/CTF exact, images to 1e-12): {_v(same)}")
+    print(f"  homogeneous limit reproduces generate_physical (CTF exact, images to 1e-12): {_v(same)}")
+    # the stored noise norm must equal what the noiseless stack would have given
+    _w=torch.tensor(pg.integration_weight_points,dtype=torch.float64,device=dev).reshape(pg.n_shells,pg.n_inplanes)
+    _nw_ref=(((p0.images_fourier-p0.clean_fourier).abs()**2)*_w).sum(dim=(1,2))
+    _rel=((p1.noise_norm_w-_nw_ref).abs()/_nw_ref).max().item()
+    print(f"  stored noise norm matches the explicit one (max rel err {_rel:.1e}): {_v(_rel<1e-10)}")
     v1,_=hinge_phantom(D,math.radians(30),device=dev)
     conf=torch.arange(24,device=dev)%2
     p2=generate_physical_hetero([vol,v1],[0.0,math.radians(30)],conf,pg,0.1,seed=3,device=dev,ctf_kwargs=dict(astig=0.0))
     # same poses, same noise draws; particles from conformation 0 identical, from 1 different
-    e0=(p2.clean_fourier[conf==0]-p0.clean_fourier[conf==0]).abs().max().item()
-    e1=(p2.clean_fourier[conf==1]-p0.clean_fourier[conf==1]).abs().max().item()
-    print(f"  conf 0 clean identical ({e0:.1e}), conf 1 differs ({e1:.2e}): {_v(e0==0.0 and e1>1e-3)}")
+    # same poses and same noise draws, so conformation-0 particles must reproduce
+    # the homogeneous images exactly and conformation-1 particles must not
+    e0=(p2.images_fourier[conf==0]-p0.images_fourier[conf==0]).abs().max().item()
+    e1=(p2.images_fourier[conf==1]-p0.images_fourier[conf==1]).abs().max().item()
+    print(f"  conf 0 images match ({e0:.1e}), conf 1 differs ({e1:.2e}): {_v(e0<1e-9 and e1>1e-3)}")
     # SNR realised per conformation (noise set from each particle's own projection)
     print(f"  t recorded per particle: {_v(torch.allclose(p2.t[conf==1],torch.tensor(math.radians(30),dtype=p2.t.dtype,device=dev)))}")
 

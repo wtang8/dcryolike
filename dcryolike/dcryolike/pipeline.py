@@ -70,8 +70,9 @@ def temperature(p, w, D):
     """beta_i = ||y_i||^2_w / (2 sigma_i^2 C) and tau_i = 1/(sigma_i^2 C), with C
     measured from the realised noise exactly as the iterative scripts do."""
     In2 = (p.images_fourier.abs() ** 2 * w).sum(dim=(1, 2))
-    n = p.images_fourier - p.clean_fourier
-    nw = (n.abs() ** 2 * w).sum(dim=(1, 2))
+    nw = getattr(p, "noise_norm_w", None)
+    if nw is None:                       # noiseless stack retained: recover the noise from it
+        nw = ((p.images_fourier - p.clean_fourier).abs() ** 2 * w).sum(dim=(1, 2))
     C = (nw / (D * D * p.sigma_noise ** 2)).mean()
     tau = 1.0 / (p.sigma_noise ** 2 * C)
     return In2 / (2 * p.sigma_noise ** 2 * C), tau, C

@@ -55,7 +55,7 @@ SINGLE=D>48
 conf=torch.arange(NP,device=dev)%NCLS
 p=generate_physical_hetero(vols,[-T_CLASS,T_CLASS],conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
-p.clean_fourier=None; torch.cuda.empty_cache()
+torch.cuda.empty_cache()   # (clean_fourier is None: the generator builds in place)
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
 shells=ShellMasks(D,dev)
 
