@@ -353,10 +353,23 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     conf = torch.as_tensor(conf, device=device).long()
     n_particles = conf.shape[0]
 
+    S, P = polar_grid.n_shells, polar_grid.n_inplanes
+    if str(device).startswith("cuda") and torch.cuda.is_available():
+        # persistent: images (complex) + ctf + proj + nreal + the polar DFT matrix
+        need = (n_particles * S * P * 24 + 2 * n_particles * D * D * 8
+                + S * P * D * D * 16) / 1e9
+        free = torch.cuda.mem_get_info()[0] / 1e9
+        print(f"[generate_physical_hetero] n={n_particles} D={D} grid {S}x{P}: "
+              f"needs ~{need:.1f} GB persistent, {free:.1f} GB free on the device", flush=True)
+        if need > 0.75 * free:
+            raise RuntimeError(
+                f"not enough GPU memory: ~{need:.1f} GB of persistent arrays against "
+                f"{free:.1f} GB free (the run also needs room for per-chunk temporaries). "
+                f"Reduce n_particles to about {int(n_particles * 0.75 * free / need)}, "
+                f"or free the device.")
     azimus, polars, gammas = uniform_so3(n_particles, seed, device, dtype)
     thetas = torch.tensor(polar_grid.theta_shell, dtype=dtype, device=device)
     radii = torch.tensor(polar_grid.radius_shells, dtype=dtype, device=device)
-    S, P = polar_grid.n_shells, polar_grid.n_inplanes
     tmpl = torch.empty(n_particles, S * P, dtype=torch.complex128 if dtype == torch.float64
                        else torch.complex64, device=device)
     proj = torch.empty(n_particles, D, D, dtype=dtype, device=device)
@@ -377,7 +390,12 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     tmpl = tmpl.reshape(n_particles, S, P)
     ctf = make_ctf(polar_grid, n_particles, box_size, seed=seed, device=device, dtype=dtype,
                    **(ctf_kwargs or {}))
-    tmpl_pow = (tmpl.abs() ** 2).sum(dim=(1, 2))
+    # chunked: |tmpl|^2 over the whole stack is two (n,S,P) float64 temporaries,
+    # 1.6 GB each at n=16000, D=96
+    tmpl_pow = torch.empty(n_particles, dtype=dtype, device=device)
+    for i in range(0, n_particles, chunk):
+        j = min(i + chunk, n_particles)
+        tmpl_pow[i:j] = (tmpl[i:j].abs() ** 2).sum(dim=(1, 2))
     tmpl *= ctf                      # in place: no second (n,S,P) stack (3.2 GB at n=16000)
     clean = tmpl                     # same storage, renamed for clarity
 
