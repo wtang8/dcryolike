@@ -56,6 +56,7 @@ POSE_FROM=os.environ.get("POSE_FROM","v0")     # v0: in-plane angle and mode wei
 # prefers those where the noise projects onto the component, so E[z] is inflated in magnitude, and correlated
 # with U, and the M-step grows U each round (5x over 10 iterations at SNR 0.3). The gate showed the shortlist
 # does not need heterogeneity, so the pose is taken without it.
+SAVE=os.environ.get("SAVE","")                  # directory: dump V0/U of both halves and U_TRUE per iteration (offline per-shell analysis)
 TAU_MODE=os.environ.get("TAU_MODE","residual")  # residual: fit the noise precision per particle from the model residual (EM for
 # sigma^2). "known": the generator's sigma. With "known" the E-step treats every un-modelled part of the
 # image (the motion the component does not capture, the band-limited part, the pose smear) as absent, so the
@@ -240,6 +241,11 @@ for it in range(1,ITERS+1):
             V0,U=state[h]; zb=zbars[h]
             a0,az,Fz,f0,fz=family_metrics(V0,U,zb); m0.append(a0); mz.append(az); Fz_h.append(Fz); mf0.append(f0); mfz.append(fz)
     half=np.mean([res_at(shells.fsc(Fz_h[0][c],Fz_h[1][c])) for c in range(NCONF)])
+    if SAVE:
+        os.makedirs(SAVE,exist_ok=True)
+        torch.save({"it":it,"V0":[st[0].cpu() for st in state],"U":[st[1].cpu() for st in state],
+                    "U_TRUE":U_TRUE.cpu(),"cons":cons.cpu(),"zbars":[zb.cpu() for zb in zbars]},
+                   os.path.join(SAVE,f"state_it{it:02d}.pt"))
     print(f"{it:>5}{np.mean(rho) if rho else float('nan'):7.3f}{np.mean(r2) if r2 else float('nan'):7.3f}"
           f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p  meanFSC V0 {np.mean(mf0):.4f} V(z) {np.mean(mfz):.4f}"
           +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
