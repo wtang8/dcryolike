@@ -46,6 +46,10 @@ SNR=float(os.environ.get("SNR","0.1")); K=int(os.environ.get("K","1"))
 SWING=math.radians(float(os.environ.get("SWING","15"))); NCONF=int(os.environ.get("NCONF","16"))
 U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0); EB=32
 U_KMAX=float(os.environ.get("U_KMAX","0"))   # >0: band-limit the components to |k|<=U_KMAX after each M-step
+U_SHRINK=os.environ.get("U_SHRINK","1")=="1"   # shrink each component per shell by the half-set FSC of the component
+# (Wiener: an estimate whose two independent halves agree with FSC f has SNR f/(1-f); the
+# optimal amplitude factor is SNR/(1+SNR) = f. Same per-shell scalar for both halves, the
+# coupling RELION's SSNR regularisation also has; the maps themselves stay independent.)
 torch.manual_seed(0)
 
 ts=list(np.linspace(-SWING,SWING,NCONF)); vols=[hinge_phantom(D,float(t),device=dev)[0] for t in ts]
@@ -117,13 +121,13 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(shells.fsc(F0,Ftrue[c]))); rz.append(res_at(shells.fsc(Fc,Ftrue[c])))
     return np.mean(r0),np.mean(rz),Fz
 
-print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
 state=[(V0_init.clone(),U_init.clone()) for _ in range(2)]
 for it in range(1,ITERS+1):
-    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[]
+    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
         bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
@@ -154,11 +158,30 @@ for it in range(1,ITERS+1):
         else:
             zbar=torch.zeros(NCONF,0,dtype=torch.float64,device=dev)
         a0,az,Fz=family_metrics(V0,U,zbar); m0.append(a0); mz.append(az); Fz_h.append(Fz)
-        state[h]=(V0,U)
+        state[h]=(V0,U); zbars[h]=zbar
+    if K>0 and U_SHRINK:
+        # align the halves' components (sign/rotation), shrink by per-shell FSC, redo the metrics
+        Ua,Ub=state[0][1],state[1][1]
+        Q,Ub_al=align_bases(Ua,Ub)
+        Fa=[fourier_volume(Ua[k]) for k in range(K)]; Fb=[fourier_volume(Ub_al[k]) for k in range(K)]
+        ushr=[]
+        for k in range(K):
+            f=np.clip(shells.fsc(Fa[k],Fb[k]),0,1)
+            filt=torch.zeros_like(shells.RR)
+            for i,m in enumerate(shells.masks): filt[m]=float(f[i])
+            Fa[k]=Fa[k]*filt; Fb[k]=Fb[k]*filt; ushr.append(res_at(f))
+        Ua=torch.stack([to_real(F) for F in Fa]); Ub_al=torch.stack([to_real(F) for F in Fb])
+        Ub=torch.einsum('jk,jxyz->kxyz',Q,Ub_al)          # back to half B's own gauge
+        state[0]=(state[0][0],Ua); state[1]=(state[1][0],Ub)
+        m0=[];mz=[];Fz_h=[]
+        for h in (0,1):
+            V0,U=state[h]; zb=zbars[h]
+            a0,az,Fz=family_metrics(V0,U,zb); m0.append(a0); mz.append(az); Fz_h.append(Fz)
     half=np.mean([res_at(shells.fsc(Fz_h[0][c],Fz_h[1][c])) for c in range(NCONF)])
     print(f"{it:>5}{np.mean(rho) if rho else float('nan'):7.3f}{np.mean(r2) if r2 else float('nan'):7.3f}"
           f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p"
-          +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else ""))
+          +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
+          +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else ""))
 if K>1:
     Q,_=align_bases(state[0][1],state[1][1])
     print(f"basis agreement between halves (Procrustes): {torch.diagonal(Q).abs().mean().item():.3f} "
