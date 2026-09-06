@@ -126,18 +126,26 @@ for it in range(1,ITERS+1):
         if K>0:
             z_mean=(wt[...,None]*Ea[...,1:]).sum(1)                       # posterior mean z per particle
             z_cov=(wt[...,None,None]*(Eaa[...,1:,1:]-Ea[...,1:,None]*Ea[...,None,1:])).sum(1)
-            V0,U,z_mean,_=fix_gauge(V0,U,z_mean,z_cov)
+            # GAUGE: centre only inside the loop. Re-whitening z every iteration
+            # rescales U by the posterior std of z, which is < 1 while U is still
+            # uninformative -- U then shrinks each round and the component dies
+            # (observed: rho ~0.02 flat, random init). PPCA EM lets the M-step
+            # set U's scale; the PCA (whitened) gauge is used for REPORTING only.
+            mu=z_mean.mean(0); V0=V0+torch.einsum('k,kxyz->xyz',mu,U); z_mean=z_mean-mu
+            V0r,Ur,z_rep,_=fix_gauge(V0,U,z_mean,z_cov)
             t_ids=p.t[ids]
-            rho.append(abs(rank_correlation(z_mean[:,0],t_ids))); r2.append(latent_r2(z_mean,t_ids))
-            leak.append(rotation_leakage(V0,U)[0].item())
+            rho.append(abs(rank_correlation(z_rep[:,0],t_ids))); r2.append(latent_r2(z_rep,t_ids))
+            leak.append(rotation_leakage(V0r,Ur)[0].item())
             zbar=torch.stack([z_mean[conf[ids]==c].mean(0) for c in range(NCONF)])
+            unorm=U.reshape(K,-1).norm(dim=1)/V0.norm()
         else:
             zbar=torch.zeros(NCONF,0,dtype=torch.float64,device=dev)
         a0,az,Fz=family_metrics(V0,U,zbar); m0.append(a0); mz.append(az); Fz_h.append(Fz)
         state[h]=(V0,U)
     half=np.mean([res_at(shells.fsc(Fz_h[0][c],Fz_h[1][c])) for c in range(NCONF)])
     print(f"{it:>5}{np.mean(rho) if rho else float('nan'):7.3f}{np.mean(r2) if r2 else float('nan'):7.3f}"
-          f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p")
+          f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p"
+          +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else ""))
 if K>1:
     Q,_=align_bases(state[0][1],state[1][1])
     print(f"basis agreement between halves (Procrustes): {torch.diagonal(Q).abs().mean().item():.3f} "

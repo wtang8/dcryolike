@@ -11,7 +11,9 @@ Classes are unlabelled when INIT=consensus (both start from the same
 low-passed consensus plus a small seeded perturbation, the standard symmetry
 break). Labels are resolved per half by the permutation that maximises class
 accuracy against the truth, then applied to every metric consistently.
-INIT=truth starts each class from its own low-passed truth (upper bound).
+INIT=random keeps the consensus start but assigns each particle a random class at
+iteration 1 (RELION-style symmetry break). INIT=truth starts each class from its
+own low-passed truth (upper bound on what the classification can hold).
 
 Reported per iteration, argmax and mixture side by side:
   acc      class accuracy (mean of the two halves)
@@ -83,6 +85,14 @@ for it in range(1,ITERS+1):
             best=tcc.max(1,keepdim=True).values
             lg=(beta[ids][:,None]*(tcc**2-best**2)).masked_fill(tcc<-1.0,-1e30)
             wt=torch.softmax(lg,dim=1)
+            if INIT=="random" and it==1:
+                # symmetry break: a RANDOM class per particle at iteration 1 (the
+                # two references are identical then, so the posterior cannot split)
+                gr=torch.Generator(device=dev).manual_seed(11+h)
+                rc=torch.randint(0,NCLS,(n,),generator=gr,device=dev)
+                keep=torch.zeros_like(wt); 
+                for k in range(NCLS): keep[:,k*MODES:(k+1)*MODES]=(rc==k).double()[:,None]
+                wt=wt*keep; wt=wt/wt.sum(1,keepdim=True).clamp(min=1e-30)
             if mode=="argmax":
                 wt=torch.zeros_like(wt).scatter_(1,lg.argmax(1,keepdim=True),1.0)
             cls_post=torch.stack([wt[:,k*MODES:(k+1)*MODES].sum(1) for k in range(NCLS)],1)
