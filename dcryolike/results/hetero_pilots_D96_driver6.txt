@@ -1,0 +1,16 @@
+##### D96 LINEAR K1 SNR0.3 U_KMAX=24  (03:54:09)
+LINEAR LATENT | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1  0.114  0.015  0.000    24.3p  24.3p  23.0p   |U|/|V0| 0.196  z std 0.447
+    2  0.229  0.056  0.000    24.8p  24.4p  23.0p   |U|/|V0| 0.187  z std 1.092
+    3  0.378  0.148  0.001    24.9p  24.2p  22.5p   |U|/|V0| 0.183  z std 1.400
+    4  0.531  0.283  0.002    24.9p  23.6p  21.8p   |U|/|V0| 0.185  z std 1.679
+##### rc=0
+##### D96 LINEAR K1 SNR0.1 U_KMAX=24  (04:02:11)
+LINEAR LATENT | GPU duty 0.8 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.1 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 4839.0
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+Terminated
+##### rc=143
+##### ALL DONE
