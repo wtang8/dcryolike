@@ -356,22 +356,30 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     azimus, polars, gammas = uniform_so3(n_particles, seed, device, dtype)
     thetas = torch.tensor(polar_grid.theta_shell, dtype=dtype, device=device)
     radii = torch.tensor(polar_grid.radius_shells, dtype=dtype, device=device)
-    pts = slice_points(fourier_circles(thetas, polars, azimus, gammas), radii)
     S, P = polar_grid.n_shells, polar_grid.n_inplanes
     tmpl = torch.empty(n_particles, S * P, dtype=torch.complex128 if dtype == torch.float64
                        else torch.complex64, device=device)
     proj = torch.empty(n_particles, D, D, dtype=dtype, device=device)
+    # The slice coordinates are (n, S*P, 3) float64 = 4.8 GB at n=16000, D=96, and
+    # they are only ever read one particle at a time, so they are built per chunk
+    # rather than for the whole stack. Same for the projections' internal (n,D,D)
+    # complex temporary. Values are unchanged: the same points, the same order.
     for b in range(len(volumes)):
         idx = torch.nonzero(conf == b).squeeze(1)
         if idx.numel() == 0:
             continue
-        tmpl[idx] = _slice(volumes[b], pts[idx], backend)
-        proj[idx] = real_space_projections(volumes[b], azimus[idx], polars[idx], gammas[idx], device, backend)
+        for i in range(0, idx.numel(), chunk):
+            k = idx[i:i + chunk]
+            pts_k = slice_points(fourier_circles(thetas, polars[k], azimus[k], gammas[k]), radii)
+            tmpl[k] = _slice(volumes[b], pts_k, backend)
+            del pts_k
+            proj[k] = real_space_projections(volumes[b], azimus[k], polars[k], gammas[k], device, backend)
     tmpl = tmpl.reshape(n_particles, S, P)
     ctf = make_ctf(polar_grid, n_particles, box_size, seed=seed, device=device, dtype=dtype,
                    **(ctf_kwargs or {}))
-    clean = tmpl * ctf
-    tmpl_pow = (tmpl.abs() ** 2).sum(dim=(1, 2)); del tmpl          # 1.6 GB at D=96
+    tmpl_pow = (tmpl.abs() ** 2).sum(dim=(1, 2))
+    tmpl *= ctf                      # in place: no second (n,S,P) stack (3.2 GB at n=16000)
+    clean = tmpl                     # same storage, renamed for clarity
 
     sig_var = proj.var(dim=(1, 2))
     noise_std = torch.sqrt(sig_var / snr_real)
