@@ -1,0 +1,11 @@
+##### D96 LINEAR K1 SNR0.3 U_KMAX=24 ITERS=10 TAU=residual  (21:23:18)
+LINEAR LATENT | GPU duty 0.8 | U_SHRINK=1 TAU=residual | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1  0.114  0.015  0.000    24.3p  24.3p  23.0p  meanFSC V0 0.4811 V(z) 0.4811   |U|/|V0| 0.196  z std 0.447  U halfFSC0.5 9p |U|shr 0.026  tau/tau0 0.976  z-consistency 0.38
+    2  0.586  0.346  0.001    24.9p  24.9p  23.0p  meanFSC V0 0.4836 V(z) 0.4853   |U|/|V0| 0.127  z std 1.191  U halfFSC0.5 11p |U|shr 0.042  tau/tau0 0.998  z-consistency 1.92
+    3  0.858  0.726  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4836 V(z) 0.4874   |U|/|V0| 0.119  z std 2.073  U halfFSC0.5 14p |U|shr 0.058  tau/tau0 1.000  z-consistency 4.54
+    4  0.891  0.795  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4839 V(z) 0.4872   |U|/|V0| 0.129  z std 2.280  U halfFSC0.5 14p |U|shr 0.066  tau/tau0 1.000  z-consistency 5.57
+Terminated
+##### rc=143
+##### ALL DONE
