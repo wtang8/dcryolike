@@ -24,7 +24,8 @@ Reported per iteration:
   V(z)    FSC0.5 of V(z_bar_c) vs the truth at conformation c, mean over bins
   half    FSC0.5 between the halves' V(z_bar_c), mean over bins (gold standard;
           each half uses its own z_bar, so no latent alignment is needed)
-Knobs: SNR, K, SWING (deg), NCONF, ITERS, NP, MODES, D, U_INIT (truth|random), U_KMAX, SMOKE=1,
+Knobs: SNR, K, SWING (deg), NCONF, ITERS, NP, MODES, D, U_INIT (truth|random), U_KMAX, U_SHRINK,
+TAU_MODE (residual|known), SMOKE=1,
 DEV=cpu BACKEND=gridding (CPU smoke run through the trilinear backend).
 """
 import os, math, numpy as np, torch
@@ -47,6 +48,12 @@ SWING=math.radians(float(os.environ.get("SWING","15"))); NCONF=int(os.environ.ge
 U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0); EB=32
 U_KMAX=float(os.environ.get("U_KMAX","0"))   # >0: band-limit the components to |k|<=U_KMAX after each M-step
 U_SHRINK=os.environ.get("U_SHRINK","1")=="1"   # shrink each component per shell by the half-set FSC of the component
+TAU_MODE=os.environ.get("TAU_MODE","residual")  # residual: fit the noise precision per particle from the model residual (EM for
+# sigma^2). "known": the generator's sigma. With "known" the E-step treats every un-modelled part of the
+# image (the motion the component does not capture, the band-limited part, the pose smear) as absent, so the
+# z posterior is overconfident: var(E[z]) came out ~5.7 against a unit prior, and the M-step inflated the
+# component 5x. The bias is common to both halves, so nothing half-set based can see it; fitting the noise
+# level is the PPCA-consistent step. Diagnostic printed: var(E[z]) + mean posterior var, which should be ~1.
 # (Wiener: an estimate whose two independent halves agree with FSC f has SNR f/(1-f); the
 # optimal amplitude factor is SNR/(1+SNR) = f. Same per-shell scalar for both halves, the
 # coupling RELION's SSNR regularisation also has; the maps themselves stay independent.)
@@ -94,22 +101,31 @@ def estep(V0,U,ids,tidx,bg):
     vol_list=[V0]+[U[k] for k in range(K)]
     lse=torch.empty(n,M,dtype=torch.float64,device=dev); Ea=torch.empty(n,M,K1,dtype=torch.float64,device=dev)
     Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone(); t0=time.monotonic()
+    resid=torch.empty(n,M,dtype=torch.float64,device=dev); pvar=torch.empty(n,M,dtype=torch.float64,device=dev)
     for i in range(0,n,EB):
         t0=duty_sleep(t0)
         j=min(i+EB,n); nb=j-i; g_=ids[i:j]; v=tidx[i:j].reshape(-1)
         pts=slice_points(fourier_circles(th,cpo[v],caz[v],torch.zeros_like(caz[v])),rr)
         T=torch.stack([_slice(vk,pts,BACKEND) for vk in vol_list],1).reshape(nb,M,K1,S,P)
         A,b,Gyy=hetero_gram(p.images_fourier[g_],T,p.ctf[g_],w)
-        logml,mean,cov=marginal_loglik(A,b,Gyy,tau[g_],prior_prec)   # (nb,M,P)
+        logml,mean,cov=marginal_loglik(A,b,Gyy,tau_cur[g_],prior_prec)   # (nb,M,P)
         lse[i:j]=torch.logsumexp(logml,dim=2)
         gi=logml.argmax(2)                                             # (nb,M)
         bg[torch.arange(i,j,device=dev)[:,None],tidx[i:j]]=-(gi.double())*(2*np.pi/P)
         mu=torch.gather(mean,2,gi[...,None,None].expand(nb,M,1,K1)).squeeze(2)
         cv=torch.gather(cov,2,gi[...,None,None,None].expand(nb,M,1,K1,K1)).squeeze(2)
+        Ag=torch.gather(A,2,gi[...,None,None,None].expand(nb,M,1,K1,K1)).squeeze(2)
+        bgm=torch.gather(b,2,gi[...,None,None].expand(nb,M,1,K1)).squeeze(2)
+        # expected weighted residual  E||y - T a||^2_w  under the posterior of a
+        resid[i:j]=(Gyy[:,None]-2*(mu*bgm).sum(-1)+torch.einsum('nmi,nmij,nmj->nm',mu,Ag,mu)
+                    +torch.einsum('nmij,nmji->nm',Ag,cv))
+        pvar[i:j]=cv[...,-1,-1] if K>0 else 0.0
         Ea[i:j]=mu; Eaa[i:j]=cv+mu[...,:,None]*mu[...,None,:]
         del T,A,b,logml,mean,cov
     wt=torch.softmax(lse-lse.max(1,keepdim=True).values,dim=1)
-    return wt,bg,Ea,Eaa
+    top=wt.argmax(1)
+    r_sel=resid[torch.arange(n,device=dev),top]; pv_sel=pvar[torch.arange(n,device=dev),top]
+    return wt,bg,Ea,Eaa,r_sel,pv_sel
 
 def family_metrics(V0,U,zbar):
     """FSC0.5 crossing AND mean FSC of V0 and of V(zbar_c) against the truth at
@@ -124,19 +140,29 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
     return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
-print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
 state=[(V0_init.clone(),U_init.clone()) for _ in range(2)]
+tau_cur=tau.clone()                                    # per-particle noise precision, refitted each E-step
 for it in range(1,ITERS+1):
+    tau_ratio=[];zcons=[]
     rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None];mf0=[];mfz=[]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
         bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
         tidx,_,_=select_modes(bc,NB,MODES,beta[ids])
-        wt,bg,Ea,Eaa=estep(V0,U,ids,tidx,bg)
-        F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=K,Ea=Ea,Eaa=Eaa,tau=tau)
+        wt,bg,Ea,Eaa,r_sel,pv_sel=estep(V0,U,ids,tidx,bg)
+        if TAU_MODE=="residual":
+            # ML noise precision from the expected residual: tau = D^2 / E||y - T a||^2_w
+            # (the same metric that defined C: E||n||^2_w = D^2 sigma^2 C)
+            tau_cur[ids]=(D*D)/r_sel.clamp(min=1e-30)
+        tau_ratio.append((tau_cur[ids]/tau[ids]).median().item())
+        if K>0:
+            zm=(wt[...,None]*Ea[...,1:]).sum(1)[:,0]
+            zcons.append((zm.var()+pv_sel.mean()).item())
+        F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=K,Ea=Ea,Eaa=Eaa,tau=tau_cur)
         V0=to_real(F[0])
         if K>0:
             # a band-limited component has far fewer noise degrees of freedom
@@ -184,7 +210,8 @@ for it in range(1,ITERS+1):
     print(f"{it:>5}{np.mean(rho) if rho else float('nan'):7.3f}{np.mean(r2) if r2 else float('nan'):7.3f}"
           f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p  meanFSC V0 {np.mean(mf0):.4f} V(z) {np.mean(mfz):.4f}"
           +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
-          +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else ""))
+          +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else "")
+          +f"  tau/tau0 {np.mean(tau_ratio):.3f}"+(f"  z-consistency {np.mean(zcons):.2f}" if zcons else ""))
 if K>1:
     Q,_=align_bases(state[0][1],state[1][1])
     print(f"basis agreement between halves (Procrustes): {torch.diagonal(Q).abs().mean().item():.3f} "
