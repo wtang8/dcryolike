@@ -49,6 +49,8 @@ U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0); EB=32
 U_KMAX=float(os.environ.get("U_KMAX","0"))   # >0: band-limit the components to |k|<=U_KMAX after each M-step
 U_SHRINK=os.environ.get("U_SHRINK","1")=="1"   # shrink each component per shell by the half-set FSC of the component
 POSE_FROM=os.environ.get("POSE_FROM","v0")     # v0: in-plane angle and mode weights from the V0-only correlation (the pose
+# search), the latent estimated at that fixed pose. "oracle": each particle's TRUE pose and in-plane angle, no
+# search at all (isolates the pilot's post-steps from the grid pose error). "marginal": see below.
 # search), the latent estimated at that fixed pose. "marginal": pick gamma and weight modes by the K-component
 # marginal likelihood. The marginal choice is a selection bias: out of ~2,560 (mode, gamma) candidates it
 # prefers those where the noise projects onto the component, so E[z] is inflated in magnitude, and correlated
@@ -79,8 +81,13 @@ va=ViewingAngles.from_viewing_distance(np.radians(VIEW_DEG))
 caz=va.azimus.to(dev).double(); cpo=va.polars.to(dev).double(); V=caz.shape[0]
 NB,_=neighbourhood(caz,cpo,NEIGH)
 SINGLE=D>48                                           # complex64 bank at D=96 (3 GB, not 6)
+ORACLE=POSE_FROM=="oracle"
 conf=torch.arange(NP,device=dev)%NCONF
 p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
+if ORACLE:
+    # the "view grid" becomes the particles' own true directions: view index == particle index
+    cpo=p.polars.clone(); caz=p.azimus.clone(); V=NP
+    G_ORACLE=torch.zeros(NP,NP,dtype=torch.float64,device=dev); G_ORACLE[torch.arange(NP,device=dev),torch.arange(NP,device=dev)]=p.gammas
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
 p.clean_fourier=None; torch.cuda.empty_cache()        # not needed past the temperature; 1.6 GB at D=96
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
@@ -167,8 +174,11 @@ for it in range(1,ITERS+1):
     rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None];mf0=[];mfz=[];uscale=[];zslope=[]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
-        bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
-        tidx,wt0,_=select_modes(bc,NB,MODES,beta[ids])
+        if ORACLE:
+            tidx=ids[:,None]; wt0=torch.ones(len(ids),1,dtype=torch.float64,device=dev); bg=G_ORACLE[ids]
+        else:
+            bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
+            tidx,wt0,_=select_modes(bc,NB,MODES,beta[ids])
         wt,bg,Ea,Eaa,r_sel,pv_sel=estep(V0,U,ids,tidx,bg,wt0)
         if TAU_MODE=="residual":
             # ML noise precision from the expected residual: tau = D^2 / E||y - T a||^2_w
