@@ -88,6 +88,11 @@ shells=ShellMasks(D,dev); prior_prec=torch.tensor([0.0]+[1.0]*K,dtype=torch.floa
 
 def lowpassed(F,k): return to_real(shells.lowpass(F,k,width=1.0))
 cons=torch.stack(vols).mean(0); V0_init=lowpassed(fourier_volume(cons),R_INIT)
+# true first principal component, scaled so its coefficient has unit variance over
+# the conformations: the amplitude the fitted U should converge to (diagnostic only)
+_X=torch.stack([v-cons for v in vols]).reshape(NCONF,-1); _,_Sv,_Vh=torch.linalg.svd(_X,full_matrices=False)
+_zt=_X@_Vh[0]; U_TRUE=(_Vh[0]*_zt.std()).reshape(D,D,D); Z_TRUE=(_zt/_zt.std())     # (NCONF,)
+F_UTRUE=fourier_volume(U_TRUE); del _X
 if K>0 and U_INIT=="truth":
     # first principal direction of the true family, low-passed (upper-bound init)
     X=torch.stack([v-cons for v in vols]).reshape(NCONF,-1)
@@ -159,7 +164,7 @@ state=[(V0_init.clone(),U_init.clone()) for _ in range(2)]
 tau_cur=tau.clone()                                    # per-particle noise precision, refitted each E-step
 for it in range(1,ITERS+1):
     tau_ratio=[];zcons=[]
-    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None];mf0=[];mfz=[]
+    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None];mf0=[];mfz=[];uscale=[];zslope=[]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
         bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
@@ -181,7 +186,14 @@ for it in range(1,ITERS+1):
             # 3DVA "filter resolution" trick, here as a hard cosine edge
             U=torch.stack([to_real(shells.lowpass(F[k+1],U_KMAX,width=1.0)) if U_KMAX>0 else to_real(F[k+1]) for k in range(K)])
         if K>0:
+            # scale of the raw M-step component against the true PC, |k|<=14 (where both are resolved)
+            _Fu=fourier_volume(U[0]); _m=shells.RR<=14
+            _s=((_Fu[_m]*F_UTRUE[_m].conj()).sum()/(F_UTRUE[_m].abs()**2).sum()).real.item()
             z_mean=(wt[...,None]*Ea[...,1:]).sum(1)                       # posterior mean z per particle
+            # slope of E[z] on the true unit-variance latent: alpha; with U at scale s the
+            # product alpha*s should be 1. Both halves' values are averaged in the print.
+            _zt_i=Z_TRUE[conf[ids]]; _al=((z_mean[:,0]-z_mean[:,0].mean())*(_zt_i-_zt_i.mean())).sum()/((_zt_i-_zt_i.mean())**2).sum()
+            uscale.append(_s); zslope.append(_al.item())
             z_cov=(wt[...,None,None]*(Eaa[...,1:,1:]-Ea[...,1:,None]*Ea[...,None,1:])).sum(1)
             # GAUGE: centre only inside the loop. Re-whitening z every iteration
             # rescales U by the posterior std of z, which is < 1 while U is still
@@ -222,7 +234,8 @@ for it in range(1,ITERS+1):
           f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p  meanFSC V0 {np.mean(mf0):.4f} V(z) {np.mean(mfz):.4f}"
           +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
           +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else "")
-          +f"  tau/tau0 {np.mean(tau_ratio):.3f}"+(f"  z-consistency {np.mean(zcons):.2f}" if zcons else ""))
+          +f"  tau/tau0 {np.mean(tau_ratio):.3f}"+(f"  z-consistency {np.mean(zcons):.2f}" if zcons else "")
+          +(f"  rawU/Utrue(k<=14) {np.mean(uscale):.3f}  dE[z]/dz_true {np.mean(zslope):.3f}  product {np.mean(uscale)*np.mean(zslope):.3f}" if uscale else ""))
 if K>1:
     Q,_=align_bases(state[0][1],state[1][1])
     print(f"basis agreement between halves (Procrustes): {torch.diagonal(Q).abs().mean().item():.3f} "
