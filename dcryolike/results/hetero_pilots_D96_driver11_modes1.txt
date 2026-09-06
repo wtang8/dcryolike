@@ -1,0 +1,14 @@
+##### D96 LINEAR K1 SNR0.3 U_KMAX=24 ITERS=8 MODES=1  (22:10:31)
+LINEAR LATENT | GPU duty 0.8 | U_SHRINK=1 TAU=residual POSE=v0 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1  0.114  0.015  0.000    24.4p  24.4p  23.0p  meanFSC V0 0.4810 V(z) 0.4810   |U|/|V0| 0.196  z std 0.436  U halfFSC0.5 9p |U|shr 0.025  tau/tau0 0.976  z-consistency 0.37  rawU/Utrue(k<=14) -0.097  dE[z]/dz_true -0.048  product 0.005
+    2  0.588  0.349  0.001    24.9p  24.9p  23.0p  meanFSC V0 0.4836 V(z) 0.4853   |U|/|V0| 0.126  z std 1.188  U halfFSC0.5 11p |U|shr 0.042  tau/tau0 0.998  z-consistency 1.92  rawU/Utrue(k<=14) -0.250  dE[z]/dz_true -0.676  product 0.169
+    3  0.859  0.727  0.003    25.0p  25.0p  23.0p  meanFSC V0 0.4835 V(z) 0.4872   |U|/|V0| 0.119  z std 2.073  U halfFSC0.5 14p |U|shr 0.058  tau/tau0 1.000  z-consistency 4.56  rawU/Utrue(k<=14) -0.276  dE[z]/dz_true -1.796  product 0.495
+    4  0.891  0.795  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4838 V(z) 0.4871   |U|/|V0| 0.130  z std 2.274  U halfFSC0.5 14p |U|shr 0.066  tau/tau0 1.000  z-consistency 5.55  rawU/Utrue(k<=14) -0.269  dE[z]/dz_true -2.132  product 0.574
+    5  0.890  0.798  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4838 V(z) 0.4864   |U|/|V0| 0.146  z std 2.336  U halfFSC0.5 14p |U|shr 0.075  tau/tau0 1.000  z-consistency 5.87  rawU/Utrue(k<=14) -0.264  dE[z]/dz_true -2.212  product 0.585
+    6  0.888  0.794  0.004    24.9p  24.9p  23.0p  meanFSC V0 0.4839 V(z) 0.4853   |U|/|V0| 0.166  z std 2.357  U halfFSC0.5 14p |U|shr 0.086  tau/tau0 1.000  z-consistency 5.98  rawU/Utrue(k<=14) -0.262  dE[z]/dz_true -2.234  product 0.586
+    7  0.886  0.791  0.004    24.9p  24.9p  23.0p  meanFSC V0 0.4839 V(z) 0.4836   |U|/|V0| 0.190  z std 2.365  U halfFSC0.5 14p |U|shr 0.099  tau/tau0 1.000  z-consistency 6.02  rawU/Utrue(k<=14) -0.261  dE[z]/dz_true -2.241  product 0.586
+    8  0.885  0.790  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4839 V(z) 0.4812   |U|/|V0| 0.218  z std 2.369  U halfFSC0.5 14p |U|shr 0.114  tau/tau0 1.000  z-consistency 6.04  rawU/Utrue(k<=14) -0.261  dE[z]/dz_true -2.244  product 0.586
+##### rc=0
+##### ALL DONE
