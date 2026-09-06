@@ -112,14 +112,17 @@ def estep(V0,U,ids,tidx,bg):
     return wt,bg,Ea,Eaa
 
 def family_metrics(V0,U,zbar):
-    """FSC0.5 of V0 and of V(zbar_c) against the truth at each conformation."""
-    r0=[];rz=[];Fz=[]
+    """FSC0.5 crossing AND mean FSC of V0 and of V(zbar_c) against the truth at
+    each conformation. The crossing is blind to a correct low-resolution
+    component (FSC is ~1 there already); the mean FSC is not."""
+    r0=[];rz=[];Fz=[];m0=[];mz=[]
     F0=fourier_volume(V0)
     for c in range(NCONF):
         Vc=V0+(torch.einsum('k,kxyz->xyz',zbar[c],U) if K>0 else 0)
         Fc=fourier_volume(Vc); Fz.append(Fc)
-        r0.append(res_at(shells.fsc(F0,Ftrue[c]))); rz.append(res_at(shells.fsc(Fc,Ftrue[c])))
-    return np.mean(r0),np.mean(rz),Fz
+        f0=shells.fsc(F0,Ftrue[c]); fz=shells.fsc(Fc,Ftrue[c])
+        r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
+    return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
 print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
@@ -127,7 +130,7 @@ print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>
 print("-"*70)
 state=[(V0_init.clone(),U_init.clone()) for _ in range(2)]
 for it in range(1,ITERS+1):
-    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None]
+    rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[];zbars=[None,None];mf0=[];mfz=[]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
         bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
@@ -157,7 +160,7 @@ for it in range(1,ITERS+1):
             unorm=U.reshape(K,-1).norm(dim=1)/V0.norm()
         else:
             zbar=torch.zeros(NCONF,0,dtype=torch.float64,device=dev)
-        a0,az,Fz=family_metrics(V0,U,zbar); m0.append(a0); mz.append(az); Fz_h.append(Fz)
+        a0,az,Fz,f0,fz=family_metrics(V0,U,zbar); m0.append(a0); mz.append(az); Fz_h.append(Fz); mf0.append(f0); mfz.append(fz)
         state[h]=(V0,U); zbars[h]=zbar
     if K>0 and U_SHRINK:
         # align the halves' components (sign/rotation), shrink by per-shell FSC, redo the metrics
@@ -173,13 +176,13 @@ for it in range(1,ITERS+1):
         Ua=torch.stack([to_real(F) for F in Fa]); Ub_al=torch.stack([to_real(F) for F in Fb])
         Ub=torch.einsum('jk,jxyz->kxyz',Q,Ub_al)          # back to half B's own gauge
         state[0]=(state[0][0],Ua); state[1]=(state[1][0],Ub)
-        m0=[];mz=[];Fz_h=[]
+        m0=[];mz=[];Fz_h=[];mf0=[];mfz=[]
         for h in (0,1):
             V0,U=state[h]; zb=zbars[h]
-            a0,az,Fz=family_metrics(V0,U,zb); m0.append(a0); mz.append(az); Fz_h.append(Fz)
+            a0,az,Fz,f0,fz=family_metrics(V0,U,zb); m0.append(a0); mz.append(az); Fz_h.append(Fz); mf0.append(f0); mfz.append(fz)
     half=np.mean([res_at(shells.fsc(Fz_h[0][c],Fz_h[1][c])) for c in range(NCONF)])
     print(f"{it:>5}{np.mean(rho) if rho else float('nan'):7.3f}{np.mean(r2) if r2 else float('nan'):7.3f}"
-          f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p"
+          f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p  meanFSC V0 {np.mean(mf0):.4f} V(z) {np.mean(mfz):.4f}"
           +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
           +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else ""))
 if K>1:
