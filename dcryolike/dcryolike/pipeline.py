@@ -156,10 +156,48 @@ def select_modes(bc, NB, modes, beta, vchunk=2048):
     return tidx, torch.softmax(lg, dim=1), tcc
 
 
+# ---- gridding correction -----------------------------------------------------------
+# The trilinear splat with per-voxel normalisation returns a volume attenuated
+# per shell (measured 0.82 for the consensus and 0.75 for a component at D=96).
+# Left uncorrected, the flat-prior gain absorbs the attenuation every E-step and
+# the volume's scale drifts down each round (V0 norm 77 -> 38 over five
+# iterations at D=96) while a component under a unit latent prior does not, so
+# the fitted motion amplitude inflates relative to the consensus. The correction
+# is a per-shell factor measured once: reconstruct a known volume from its own
+# noiseless slices at the run's poses and take the ratio.
+
+def gridding_correction(vol, ids_like, sel_idx, gam, th, cpo, caz, rr, w, D, ctf_like, B=250, floor=0.25, backend="nufft"):
+    """Per-shell attenuation a(k) of reconstruct() at these poses: a Fourier volume
+    reconstructed from noiseless slices of ``vol`` divided by the true one, real
+    part of the cross-power over the shell. Returns (D,D,D) divisor (1/a, floored)."""
+    from .slicing import fourier_volume
+    from .generator import _slice
+    dev = vol.device; n = len(ids_like); SP = w.numel()
+    acc = HeteroAccumulator.new(D, 1, dev)
+    for i in range(0, n, B):
+        j = min(i + B, n); loc = torch.arange(i, j, device=dev)
+        v = sel_idx[loc, 0]
+        pts = slice_points(fourier_circles(th, cpo[v], caz[v], gam[loc, v]), rr)
+        y = _slice(vol, pts, backend).reshape(-1)
+        c = ctf_like[ids_like[loc]].reshape(-1)
+        wg = w.reshape(1, -1).expand(j - i, -1).reshape(-1)
+        ea = torch.ones((j - i) * SP, 1, dtype=w.dtype, device=dev)
+        acc.add(pts.reshape(-1, 3), y * c, c, wg, ea, ea[:, :, None])
+    Frec = acc.solve(1e-3)[0]; Ftrue = fourier_volume(vol)
+    ii = torch.arange(D, dtype=torch.float64, device=dev) - D // 2
+    X, Y, Z = torch.meshgrid(ii, ii, ii, indexing="ij"); RR = (X ** 2 + Y ** 2 + Z ** 2).sqrt()
+    corr = torch.ones(D, D, D, dtype=torch.float64, device=dev)
+    for k in range(1, D // 2):
+        m = (RR >= k - 0.5) & (RR < k + 0.5)
+        a = ((Frec[m] * Ftrue[m].conj()).real.sum() / (Ftrue[m].abs() ** 2).sum().clamp(min=1e-30)).item()
+        corr[m] = 1.0 / max(a, floor)
+    return corr
+
+
 # ---- reconstruction ------------------------------------------------------------
 
 def reconstruct(p, ids, sel_idx, sel_w, gam, th, cpo, caz, rr, w, D, lam=1e-3, B=250,
-                K=0, Ea=None, Eaa=None, tau=None):
+                K=0, Ea=None, Eaa=None, tau=None, grid_corr=None):
     """Mixture insertion. With K=0 this is the homogeneous num/den; with K>0 it
     is the per-voxel (K+1)x(K+1) solve, Ea/Eaa (n,modes,K+1[,K+1]) the posterior
     moments of the coefficients and tau (n,) the noise precision (weights the
@@ -185,4 +223,5 @@ def reconstruct(p, ids, sel_idx, sel_w, gam, th, cpo, caz, rr, w, D, lam=1e-3, B
             else:
                 ea = Ea[l_, m].repeat_interleave(SP, 0); eaa = Eaa[l_, m].repeat_interleave(SP, 0)
             acc.add(pts, y, c, wg, ea, eaa)
-    return acc.solve(lam)
+    F = acc.solve(lam)
+    return F * grid_corr[None] if grid_corr is not None else F

@@ -19,7 +19,7 @@ import _paths  # noqa: F401
 from cryolike.grids import PolarGrid
 from dcryolike.generator import hinge_phantom, generate_physical_hetero
 from dcryolike.slicing import fourier_circles, slice_points, slice_nufft, fourier_volume
-from dcryolike.pipeline import temperature, reconstruct, ShellMasks, to_real
+from dcryolike.pipeline import temperature, reconstruct, ShellMasks, to_real, gridding_correction
 
 _FAILS=[]
 def _v(c): _FAILS.append(bool(c)); return 'PASS' if c else 'FAIL'
@@ -54,6 +54,19 @@ def run(label,Ez,v):
     print(f"  {label:44s} U scale k<=14 {s14:.3f}  k<=24 {s24:.3f}  k<=40 {s40:.3f} | V0 scale {v0:.3f}")
     return s14,s24
 print(f"D={D} SNR {SNR} {NP} particles, true poses; |U_true|/|V0| = {(U_TRUE.norm()/cons.norm()).item():.3f}")
+# 0. the gridding correction, measured at these poses, then applied to every case below
+GC=gridding_correction(cons,ids,tidx,bg,th,cpo,caz,rr,w,D,p.ctf)
+print(f"  gridding attenuation a(k) at k=4,12,24,40: "+" ".join(f"{1/GC[D//2+k,D//2,D//2].item():.3f}" for k in (4,12,24,40)))
+_run=run
+def run(label,Ez,v,gc=GC):
+    Ea=torch.stack([torch.ones_like(Ez),Ez],1)[:,None,:]
+    Eaa=Ea[...,:,None]*Ea[...,None,:]; Eaa=Eaa.clone(); Eaa[...,1,1]+=v
+    F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=1,Ea=Ea,Eaa=Eaa,tau=tau,grid_corr=gc)
+    s14,s24,s40=scale(F[1],14),scale(F[1],24),scale(F[1],40)
+    v0=((F[0][shells.RR<=24]*F_C[shells.RR<=24].conj()).sum()/(F_C[shells.RR<=24].abs()**2).sum()).real.item()
+    print(f"  {label:44s} U scale k<=14 {s14:.3f}  k<=24 {s24:.3f}  k<=40 {s40:.3f} | V0 scale {v0:.3f}")
+    return s14,s24
+_run("E[z]=z_true, v=0, NO correction",z,0.0)
 # 1. exact latents, no posterior variance
 s_a=run("E[z]=z_true, v=0",z,0.0)
 # 2. exact latents plus the posterior variance the E-step would carry (d ~ tau |T_U|^2 ~ 70 -> v ~ 0.014)
@@ -99,7 +112,7 @@ for variant in ("free","held at 0.3"):
     for it in range(1,7):
         Ea,Eaa=estep_true(U_cur)
         zm=Ea[:,0,1]; slope=(((zm-zm.mean())*(z-z.mean())).sum()/((z-z.mean())**2).sum()).item()
-        F=reconstruct(p,ids,tidx,wt,bgt,th,cpo,caz,rr,w,D,K=1,Ea=Ea,Eaa=Eaa,tau=tau)
+        F=reconstruct(p,ids,tidx,wt,bgt,th,cpo,caz,rr,w,D,K=1,Ea=Ea,Eaa=Eaa,tau=tau,grid_corr=GC)
         U_raw=to_real(F[1]); sc=scale(F[1],24)
         print(f"    it {it}: E[z] slope {slope:.3f} std {zm.std().item():.3f} | raw U scale k<=24 {sc:.3f} | product {sc*slope:.3f} (1 = true)")
         U_cur=U_raw if variant=="free" else U_raw*(0.3*U_TRUE.norm()/U_raw.norm())

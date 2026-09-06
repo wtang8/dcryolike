@@ -37,7 +37,7 @@ from dcryolike.slicing import fourier_volume, fourier_circles, slice_points
 from dcryolike.generator import _slice
 from dcryolike.hetero import hetero_gram, marginal_loglik, fix_gauge, rotation_leakage, rank_correlation, latent_r2, align_bases
 from dcryolike.pipeline import (ShellMasks, res_at, to_real, temperature, Bank, neighbourhood,
-                                select_modes, reconstruct, duty_sleep, GPU_DUTY)
+                                select_modes, reconstruct, duty_sleep, GPU_DUTY, gridding_correction)
 import time
 
 dev=os.environ.get("DEV","cuda"); BACKEND=os.environ.get("BACKEND","nufft"); SMOKE=os.environ.get("SMOKE","0")=="1"
@@ -57,6 +57,9 @@ POSE_FROM=os.environ.get("POSE_FROM","v0")     # v0: in-plane angle and mode wei
 # with U, and the M-step grows U each round (5x over 10 iterations at SNR 0.3). The gate showed the shortlist
 # does not need heterogeneity, so the pose is taken without it.
 SAVE=os.environ.get("SAVE","")                  # directory: dump V0/U of both halves and U_TRUE per iteration (offline per-shell analysis)
+GRID_CORR=os.environ.get("GRID_CORR","1")=="1"  # per-shell gridding correction of the M-step (see pipeline.gridding_correction);
+# without it the consensus scale drifts down every iteration (V0 norm 77 -> 38 over 5 rounds at D=96) and the
+# fitted motion amplitude inflates relative to it. This was the "amplitude bias" of drivers 5-13.
 TAU_MODE=os.environ.get("TAU_MODE","residual")  # residual: fit the noise precision per particle from the model residual (EM for
 # sigma^2). "known": the generator's sigma. With "known" the E-step treats every un-modelled part of the
 # image (the motion the component does not capture, the band-limited part, the pose smear) as absent, so the
@@ -171,11 +174,12 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
     return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
-print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} GRID_CORR={int(GRID_CORR)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
 state=[(V0_init.clone(),(rand_init(5+h) if (K>0 and U_INIT!="truth" and INIT_SPLIT) else U_init).clone()) for h in range(2)]
+GCORR=[None,None]                                       # per-half gridding correction, measured at the first iteration's poses
 tau_cur=tau.clone()                                    # per-particle noise precision, refitted each E-step
 for it in range(1,ITERS+1):
     tau_ratio=[];zcons=[]
@@ -196,7 +200,12 @@ for it in range(1,ITERS+1):
         if K>0:
             zm=(wt[...,None]*Ea[...,1:]).sum(1)[:,0]
             zcons.append((zm.var()+pv_sel.mean()).item())
-        F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=K,Ea=Ea,Eaa=Eaa,tau=tau_cur)
+        if GRID_CORR and GCORR[h] is None:
+            GCORR[h]=gridding_correction(cons,ids,tidx,bg,th,cpo,caz,rr,w,D,p.ctf,backend=BACKEND)
+            _ks=[k for k in (4,12,24) if k<D//2]
+            print(f"      half {h}: gridding attenuation a(k) at k={_ks}: "
+                  +" ".join(f"{1/GCORR[h][D//2+k,D//2,D//2].item():.3f}" for k in _ks))
+        F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=K,Ea=Ea,Eaa=Eaa,tau=tau_cur,grid_corr=GCORR[h])
         V0=to_real(F[0])
         if K>0:
             # a band-limited component has far fewer noise degrees of freedom
@@ -257,7 +266,7 @@ for it in range(1,ITERS+1):
           f"{np.mean(leak) if leak else float('nan'):7.3f}  {np.mean(m0):6.1f}p{np.mean(mz):6.1f}p{half:6.1f}p  meanFSC V0 {np.mean(mf0):.4f} V(z) {np.mean(mfz):.4f}"
           +(f"   |U|/|V0| {unorm[0].item():.3f}  z std {z_mean[:,0].std().item():.3f}" if K>0 else "")
           +(f"  U halfFSC0.5 {ushr[0]}p |U|shr {(state[0][1].reshape(K,-1).norm(dim=1)[0]/state[0][0].norm()).item():.3f}" if K>0 and U_SHRINK else "")
-          +f"  tau/tau0 {np.mean(tau_ratio):.3f}"+(f"  z-consistency {np.mean(zcons):.2f}" if zcons else "")
+          +f"  |V0| {state[0][0].norm().item():.1f}  tau/tau0 {np.mean(tau_ratio):.3f}"+(f"  z-consistency {np.mean(zcons):.2f}" if zcons else "")
           +(f"  rawU/Utrue(k<=14) {np.mean(uscale):.3f}  dE[z]/dz_true {np.mean(zslope):.3f}  product {np.mean(uscale)*np.mean(zslope):.3f}" if uscale else ""))
 if K>1:
     Q,_=align_bases(state[0][1],state[1][1])
