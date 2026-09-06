@@ -103,18 +103,19 @@ def neighbourhood(caz, cpo, deg, chunk=4096):
     (a view is its own neighbour; padding repeats the view itself). Built in
     chunks so V ~ 30k never materialises a V x V matrix."""
     nd = torch.stack([torch.sin(cpo) * torch.cos(caz), torch.sin(cpo) * torch.sin(caz), torch.cos(cpo)], -1)
-    V = nd.shape[0]; c = np.cos(np.radians(deg)); rows = []; width = 0
+    V = nd.shape[0]; c = np.cos(np.radians(deg))
+    width = 0                                          # pass 1: widest neighbourhood
     for i in range(0, V, chunk):
         j = min(i + chunk, V)
+        width = max(width, int(((nd[i:j] @ nd.T) >= c).sum(1).max()))
+    idx = torch.arange(V, device=nd.device)[:, None].expand(V, width).clone()   # padding = self
+    for i in range(0, V, chunk):                       # pass 2: vectorised fill
+        j = min(i + chunk, V)
         nb = (nd[i:j] @ nd.T) >= c
-        cnt = nb.sum(1); width = max(width, int(cnt.max()))
-        rows.append(nb)
-    idx = torch.empty(V, width, dtype=torch.long, device=nd.device)
-    for k, nb in enumerate(rows):
-        i = k * chunk
-        for r in range(nb.shape[0]):
-            nz = torch.nonzero(nb[r]).squeeze(1)
-            idx[i + r, :nz.numel()] = nz; idx[i + r, nz.numel():] = i + r
+        r, col = torch.nonzero(nb, as_tuple=True)      # row-major, so rows are grouped
+        start = torch.searchsorted(r, torch.arange(j - i, device=nd.device))
+        pos = torch.arange(r.numel(), device=nd.device) - start[r]
+        idx[i + r, pos] = col
         del nb
     return idx, nd
 

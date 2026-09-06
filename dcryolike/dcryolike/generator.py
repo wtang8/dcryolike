@@ -217,14 +217,25 @@ def generate(volume, polar_grid, n_particles, snr, box_size=None, seed=0,
 # in generate() is not, and reads much easier than it is.
 # ---------------------------------------------------------------------------
 
-def _polar_dft_matrix(polar_grid, D, device, dtype=torch.complex128):
-    """Exact DFT from a D x D real-space image to the polar Fourier points."""
+def _polar_dft_matrix(polar_grid, D, device, dtype=torch.complex128, rows=2048):
+    """Exact DFT from a D x D real-space image to the polar Fourier points.
+
+    Built in row chunks: the one-shot version holds three (n_points x D^2)
+    float64/complex128 temporaries, ~5.5 GB at D=96 with 12.5k polar points.
+    Element-wise arithmetic is identical, so the matrix is bit-for-bit the same.
+    """
     kx = torch.tensor(polar_grid.x_points, dtype=torch.float64, device=device)
     ky = torch.tensor(polar_grid.y_points, dtype=torch.float64, device=device)
     ax = torch.arange(D, dtype=torch.float64, device=device) - D // 2
     X, Y = torch.meshgrid(ax, ax, indexing="ij")
-    ph = (-2j * np.pi / D) * (kx[:, None] * X.reshape(1, -1) + ky[:, None] * Y.reshape(1, -1))
-    return torch.exp(ph.to(dtype)) / D
+    Xf, Yf = X.reshape(1, -1), Y.reshape(1, -1)
+    M = torch.empty(kx.shape[0], D * D, dtype=dtype, device=device)
+    for i in range(0, kx.shape[0], rows):
+        j = min(i + rows, kx.shape[0])
+        ph = (-2j * np.pi / D) * (kx[i:j, None] * Xf + ky[i:j, None] * Yf)
+        M[i:j] = torch.exp(ph.to(dtype)) / D
+        del ph
+    return M
 
 
 def real_space_projections(volume, azimus, polars, gammas, device="cuda", backend="nufft"):
@@ -305,7 +316,7 @@ def _slice(volume, pts, backend="nufft"):
 
 
 def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_size=None,
-                             seed=0, ctf_kwargs=None, device="cuda", backend="nufft"):
+                             seed=0, ctf_kwargs=None, device="cuda", backend="nufft", chunk=1000):
     """generate_physical() for a stack whose particles come from different volumes.
 
     volumes  : list of (D,D,D) volumes, one per conformation
@@ -344,6 +355,7 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     ctf = make_ctf(polar_grid, n_particles, box_size, seed=seed, device=device, dtype=dtype,
                    **(ctf_kwargs or {}))
     clean = tmpl * ctf
+    tmpl_pow = (tmpl.abs() ** 2).sum(dim=(1, 2)); del tmpl          # 1.6 GB at D=96
 
     sig_var = proj.var(dim=(1, 2))
     noise_std = torch.sqrt(sig_var / snr_real)
@@ -351,13 +363,17 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     nreal = torch.randn(n_particles, D * D, generator=gen, dtype=dtype, device=device)
     nreal = nreal * noise_std[:, None]
     M = _polar_dft_matrix(polar_grid, D, device)
-    npol = (nreal.to(torch.complex128) @ M.T).reshape(n_particles, S, P).to(clean.dtype)
-    ref = (M @ proj.reshape(n_particles, -1).to(torch.complex128).T).T.reshape_as(npol)
-    scale = torch.sqrt((tmpl.abs() ** 2).sum(dim=(1, 2)) / (ref.abs() ** 2).sum(dim=(1, 2)))
-    npol = npol * scale[:, None, None]
-    del M, ref, nreal
-
-    images = clean + npol
+    # chunked: the (n, S*P) complex128 products peak at ~10 GB for 8000 particles
+    # at D=96 if done in one go; the per-particle result is identical
+    images = torch.empty_like(clean)
+    for i in range(0, n_particles, chunk):
+        j = min(i + chunk, n_particles)
+        npol = (nreal[i:j].to(torch.complex128) @ M.T).reshape(j - i, S, P).to(clean.dtype)
+        ref = (M @ proj[i:j].reshape(j - i, -1).to(torch.complex128).T).T.reshape_as(npol)
+        scale = torch.sqrt(tmpl_pow[i:j] / (ref.abs() ** 2).sum(dim=(1, 2)))
+        images[i:j] = clean[i:j] + npol * scale[:, None, None]
+        del npol, ref
+    del M, nreal, proj
     t_values = torch.as_tensor(t_values, dtype=dtype, device=device)
     return HeteroParticles(images, clean, azimus, polars, gammas, ctf, noise_std, snr_real,
                            conf=conf, t=t_values[conf])
