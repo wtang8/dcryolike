@@ -257,7 +257,29 @@ pattern from a shell whose own command line contains it (it kills the shell; use
 
 ## 3. Exact Next Action
 
-**Read driver 15** (`dcryolike/results/hetero_pilots_D96_driver15_gridcorr.txt` once archived; else
+**CONFIRMED (6 Sep, 23:40). Drivers 15 and 16** (`results/hetero_pilots_D96_driver15_gridcorr.txt`,
+`..._driver16_gridcorr_gauge.txt`): with the gridding correction the model's volumes stay above the
+consensus, +0.0036–0.0038 mean FSC from iteration 4 through 8 (every earlier run had fallen below by
+iteration 7); with the gauge pin added, V0's norm is stationary (117.9 → 118.5 over iterations 2–8;
+driver 15 without it crept 121 → 150). The mean posterior gain sits at a constant 0.966 (the measured
+correction overshoots by ~3.5%; the pin removes it each round). The linear pilot now works end to
+end at D=96, SNR 0.3, grid poses, ten modes, K=1: rho 0.89, R² 0.80.
+
+**Next, in order, each with its prediction written before launch:**
+1. **NP=16000** (same settings). Prediction: the component's half-set FSC 0.5 crossing moves from
+   14 px to ≥17 px (noise bulk edge scales with 1/√N), and V(z) − V0 at least doubles (the
+   shrinkage keeps more shells). If the crossing does not move, the resolution limit is not the
+   particle count and the shrinkage rule is the next suspect.
+2. **K=2** with the corrected pipeline. Prediction: rho of the first latent unchanged (0.89), the
+   second component's leakage into rigid motions ≤0.01, and V(z) − V0 higher than K=1 at the
+   extreme conformations (the quadratic term of the hinge). If the second component is noise
+   (half-set FSC 0.5 below 6 px), one component is all this stack supports.
+3. **Single-pose vs shortlist-averaged latent** at SNR 0.3 / 0.1 / 0.05 (MODES=1 vs 10 with a
+   shared latent per particle — needs the shared-z E-step, not yet written). This is the claim
+   only this pipeline can test; at SNR 0.3 the two are already identical (weights near one-hot).
+4. Register `hetero_mstep_check.py` in `run_tests.sh` asserting corrected scales ≥ 0.9.
+
+(older text follows) **Read driver 15** (`dcryolike/results/hetero_pilots_D96_driver15_gridcorr.txt` once archived; else
 `scratchpad/pilots15.log`). Success = `meanFSC V(z)` stays above `V0` from iteration 2 through 8
 and the printed `|V0|` stays ~77 instead of falling. If so: the linear pilot works end to end; go to
 NP=16000, then K=2, then the single-pose vs shortlist-averaged latent comparison at SNR 0.3/0.1/0.05.
