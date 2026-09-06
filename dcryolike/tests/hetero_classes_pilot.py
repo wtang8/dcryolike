@@ -40,17 +40,22 @@ torch.manual_seed(0)
 
 vols=[hinge_phantom(D,-T_CLASS,device=dev)[0],hinge_phantom(D,+T_CLASS,device=dev)[0]]
 Ftrue=[fourier_volume(v) for v in vols]
-pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=64 if SMOKE else 128,uniform=True)
+P=int(os.environ.get("P_INPLANE",str(64 if SMOKE else min(256,int(2**np.ceil(np.log2(2*np.pi*(D//2)*0.85)))))))
+pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=P,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
 th=torch.tensor(pg.theta_shell,dtype=torch.float64,device=dev)
 rr=torch.tensor(pg.radius_shells,dtype=torch.float64,device=dev)
 w=torch.tensor(pg.integration_weight_points,dtype=torch.float64,device=dev).reshape(S,P); wr=w[:,0]
-va=ViewingAngles.from_viewing_distance(np.radians(8.0 if SMOKE else 4.0))
+VIEW_DEG=float(os.environ.get("VIEW_DEG", "8.0" if SMOKE else ("4.0" if D<=48 else str(np.degrees(1.0/(D//2))))))
+NEIGH=NEIGH*min(1.0,24.0/(D//2))
+va=ViewingAngles.from_viewing_distance(np.radians(VIEW_DEG))
 caz=va.azimus.to(dev).double(); cpo=va.polars.to(dev).double(); V=caz.shape[0]
 NB,_=neighbourhood(caz,cpo,NEIGH)
+SINGLE=D>48
 conf=torch.arange(NP,device=dev)%NCLS
 p=generate_physical_hetero(vols,[-T_CLASS,T_CLASS],conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
+p.clean_fourier=None; torch.cuda.empty_cache()
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
 shells=ShellMasks(D,dev)
 
@@ -77,7 +82,7 @@ for it in range(1,ITERS+1):
             ids=HALF[h]; n=len(ids)
             bcs=[];bgs=[]
             for k in range(NCLS):
-                bank=Bank(ref[mode][h][k],th,cpo,caz,rr,S,P,backend=BACKEND)
+                bank=Bank(ref[mode][h][k],th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE)
                 bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); bcs.append(bc); bgs.append(bg); del bank
             # joint (class, view) modes: local maxima per class, softmax across both classes
             sel=[select_modes(bcs[k],NB,MODES,beta[ids]) for k in range(NCLS)]

@@ -62,46 +62,75 @@ def temperature(p, w, D):
 # ---- bank search: best normalised CC per view, over all in-plane rotations -----
 
 class Bank:
-    def __init__(self, dens, th, cpo, caz, rr, S, P, chunk=4096, backend="nufft"):
+    """FFT-along-theta template bank. ``single=True`` stores it in complex64 and
+    searches in float32 (what the D=96 recall scripts do; halves the memory)."""
+    def __init__(self, dens, th, cpo, caz, rr, S, P, chunk=2048, backend="nufft", single=False):
         V = caz.shape[0]
-        cdt = torch.complex128 if dens.dtype == torch.float64 else torch.complex64
+        cdt = torch.complex64 if (single or dens.dtype != torch.float64) else torch.complex128
+        rdt = torch.float32 if cdt == torch.complex64 else torch.float64
         self.Tf = torch.empty(V, S, P, dtype=cdt, device=dens.device)
-        self.Tpow = torch.empty(V, S, dtype=dens.dtype, device=dens.device)
+        self.Tpow = torch.empty(V, S, dtype=rdt, device=dens.device)
         for i in range(0, V, chunk):
             j = min(i + chunk, V)
             Tb = _slice(dens, slice_points(fourier_circles(th, cpo[i:j], caz[i:j],
-                                                           torch.zeros_like(caz[i:j])), rr), backend).reshape(j - i, S, P)
+                                                           torch.zeros_like(caz[i:j])), rr), backend).reshape(j - i, S, P).to(cdt)
             self.Tf[i:j] = torch.fft.fft(Tb, dim=-1).conj(); self.Tpow[i:j] = (Tb.abs() ** 2).sum(-1)
-        self.V, self.P = V, P
+            del Tb
+        self.V, self.P, self.cdt, self.rdt = V, P, cdt, rdt
 
-    def search(self, images, cr, wr, In, batch=16):
+    def search(self, images, cr, wr, In, batch=None):
         """images (n,S,P), cr (n,S) isotropic CTF, wr (S,) shell weights, In (n,) image norms.
         Returns best cc (n,V) and the in-plane angle (n,V) of the best gamma."""
         n = images.shape[0]; V, P = self.V, self.P
+        if batch is None:   # keep the (b,V,P) correlation block near 1 GB
+            batch = max(1, int(1e9 // (V * P * (8 if self.cdt == torch.complex64 else 16))))
+        cr = cr.to(self.rdt); wr = wr.to(self.rdt); In = In.to(self.rdt)
         Tn = torch.sqrt(torch.einsum('vr,br->bv', self.Tpow, wr[None, :] * cr ** 2))
-        bc = torch.empty(n, V, device=images.device, dtype=self.Tpow.dtype)
-        bg = torch.empty_like(bc)
+        bc = torch.empty(n, V, device=images.device, dtype=self.rdt)
+        bg = torch.empty(n, V, device=images.device, dtype=torch.float64)
         for i in range(0, n, batch):
             j = min(i + batch, n)
-            If = torch.fft.fft(images[i:j], dim=-1); cw = (wr[None, :] * cr[i:j])[:, :, None]
+            If = torch.fft.fft(images[i:j].to(self.cdt), dim=-1); cw = (wr[None, :] * cr[i:j])[:, :, None].to(self.cdt)
             cc = torch.fft.ifft(torch.einsum('vrk,brk->bvk', self.Tf, If * cw), dim=-1).real
             cc = cc / (Tn[i:j, :, None] * In[i:j, None, None])
-            m, gi = cc.max(-1); bc[i:j] = m; bg[i:j] = -(gi.to(bc.dtype)) * (2 * np.pi / P)
+            m, gi = cc.max(-1); bc[i:j] = m; bg[i:j] = -(gi.to(torch.float64)) * (2 * np.pi / P)
+            del cc, If
         return bc, bg
 
 
-def neighbourhood(caz, cpo, deg):
+def neighbourhood(caz, cpo, deg, chunk=4096):
+    """Padded neighbour index (V, max_nb) of views within `deg` of each view
+    (a view is its own neighbour; padding repeats the view itself). Built in
+    chunks so V ~ 30k never materialises a V x V matrix."""
     nd = torch.stack([torch.sin(cpo) * torch.cos(caz), torch.sin(cpo) * torch.sin(caz), torch.cos(cpo)], -1)
-    return (nd @ nd.T) >= np.cos(np.radians(deg)), nd
+    V = nd.shape[0]; c = np.cos(np.radians(deg)); rows = []; width = 0
+    for i in range(0, V, chunk):
+        j = min(i + chunk, V)
+        nb = (nd[i:j] @ nd.T) >= c
+        cnt = nb.sum(1); width = max(width, int(cnt.max()))
+        rows.append(nb)
+    idx = torch.empty(V, width, dtype=torch.long, device=nd.device)
+    for k, nb in enumerate(rows):
+        i = k * chunk
+        for r in range(nb.shape[0]):
+            nz = torch.nonzero(nb[r]).squeeze(1)
+            idx[i + r, :nz.numel()] = nz; idx[i + r, nz.numel():] = i + r
+        del nb
+    return idx, nd
 
 
-def select_modes(bc, NB, modes, beta):
-    """Local maxima of cc over the view sphere (within NB), top `modes` of them,
-    softmax weights exp(beta (cc^2 - cc_best^2)). Returns indices (n,modes), weights."""
-    V = bc.shape[1]
-    nbmax = torch.stack([bc[:, NB[v]].max(1).values for v in range(V)], 1)
+def select_modes(bc, NB, modes, beta, vchunk=2048):
+    """Local maxima of cc over the view sphere (within the neighbour index NB),
+    top `modes` of them, softmax weights exp(beta (cc^2 - cc_best^2)).
+    Returns indices (n,modes), weights (n,modes), cc (n,modes)."""
+    n, V = bc.shape
+    nbmax = torch.empty_like(bc)
+    for i in range(0, V, vchunk):                     # (n, vchunk, width) gathers
+        j = min(i + vchunk, V)
+        nbmax[:, i:j] = bc[:, NB[i:j]].max(-1).values
     masked = bc.masked_fill(~(bc >= nbmax - 1e-12), -2.0)
     tcc, tidx = masked.topk(modes, dim=1)
+    tcc = tcc.to(beta.dtype)
     lg = (beta[:, None] * (tcc ** 2 - tcc[:, :1] ** 2)).masked_fill(tcc < -1.0, -1e30)
     return tidx, torch.softmax(lg, dim=1), tcc
 

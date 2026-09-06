@@ -24,7 +24,7 @@ Reported per iteration:
   V(z)    FSC0.5 of V(z_bar_c) vs the truth at conformation c, mean over bins
   half    FSC0.5 between the halves' V(z_bar_c), mean over bins (gold standard;
           each half uses its own z_bar, so no latent alignment is needed)
-Knobs: SNR, K, SWING (deg), NCONF, ITERS, NP, MODES, D, U_INIT (truth|random), SMOKE=1,
+Knobs: SNR, K, SWING (deg), NCONF, ITERS, NP, MODES, D, U_INIT (truth|random), U_KMAX, SMOKE=1,
 DEV=cpu BACKEND=gridding (CPU smoke run through the trilinear backend).
 """
 import os, math, numpy as np, torch
@@ -44,21 +44,27 @@ MODES=int(os.environ.get("MODES","10")); NEIGH=10.0; ITERS=int(os.environ.get("I
 SNR=float(os.environ.get("SNR","0.1")); K=int(os.environ.get("K","1"))
 SWING=math.radians(float(os.environ.get("SWING","15"))); NCONF=int(os.environ.get("NCONF","16"))
 U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0); EB=32
+U_KMAX=float(os.environ.get("U_KMAX","0"))   # >0: band-limit the components to |k|<=U_KMAX after each M-step
 torch.manual_seed(0)
 
 ts=list(np.linspace(-SWING,SWING,NCONF)); vols=[hinge_phantom(D,float(t),device=dev)[0] for t in ts]
 Ftrue=[fourier_volume(v) for v in vols]
-pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=64 if SMOKE else 128,uniform=True)
+P=int(os.environ.get("P_INPLANE",str(64 if SMOKE else min(256,int(2**np.ceil(np.log2(2*np.pi*(D//2)*0.85)))))))
+pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=P,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
 th=torch.tensor(pg.theta_shell,dtype=torch.float64,device=dev)
 rr=torch.tensor(pg.radius_shells,dtype=torch.float64,device=dev)
 w=torch.tensor(pg.integration_weight_points,dtype=torch.float64,device=dev).reshape(S,P); wr=w[:,0]
-va=ViewingAngles.from_viewing_distance(np.radians(8.0 if SMOKE else 4.0))
+VIEW_DEG=float(os.environ.get("VIEW_DEG", "8.0" if SMOKE else ("4.0" if D<=48 else str(np.degrees(1.0/(D//2))))))
+NEIGH=NEIGH*min(1.0,24.0/(D//2))                     # local-max radius scales with 1/k_max
+va=ViewingAngles.from_viewing_distance(np.radians(VIEW_DEG))
 caz=va.azimus.to(dev).double(); cpo=va.polars.to(dev).double(); V=caz.shape[0]
 NB,_=neighbourhood(caz,cpo,NEIGH)
+SINGLE=D>48                                           # complex64 bank at D=96 (3 GB, not 6)
 conf=torch.arange(NP,device=dev)%NCONF
 p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
+p.clean_fourier=None; torch.cuda.empty_cache()        # not needed past the temperature; 1.6 GB at D=96
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
 shells=ShellMasks(D,dev); prior_prec=torch.tensor([0.0]+[1.0]*K,dtype=torch.float64,device=dev)
 
@@ -109,7 +115,7 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(shells.fsc(F0,Ftrue[c]))); rz.append(res_at(shells.fsc(Fc,Ftrue[c])))
     return np.mean(r0),np.mean(rz),Fz
 
-print(f"LINEAR LATENT | physical SNR {SNR} | K={K} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
@@ -118,11 +124,16 @@ for it in range(1,ITERS+1):
     rho=[];r2=[];leak=[];Fz_h=[];m0=[];mz=[]
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
-        bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank
+        bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
         tidx,_,_=select_modes(bc,NB,MODES,beta[ids])
         wt,bg,Ea,Eaa=estep(V0,U,ids,tidx,bg)
         F=reconstruct(p,ids,tidx,wt,bg,th,cpo,caz,rr,w,D,K=K,Ea=Ea,Eaa=Eaa,tau=tau)
-        V0=to_real(F[0]); U=torch.stack([to_real(F[k+1]) for k in range(K)]) if K>0 else U
+        V0=to_real(F[0])
+        if K>0:
+            # a band-limited component has far fewer noise degrees of freedom
+            # (p shrinks ~k^3) while the motion energy is mostly low-k: the
+            # 3DVA "filter resolution" trick, here as a hard cosine edge
+            U=torch.stack([to_real(shells.lowpass(F[k+1],U_KMAX,width=1.0)) if U_KMAX>0 else to_real(F[k+1]) for k in range(K)])
         if K>0:
             z_mean=(wt[...,None]*Ea[...,1:]).sum(1)                       # posterior mean z per particle
             z_cov=(wt[...,None,None]*(Eaa[...,1:,1:]-Ea[...,1:,None]*Ea[...,None,1:])).sum(1)
