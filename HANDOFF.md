@@ -196,6 +196,12 @@ Chain of results, in order (all physical noise, gold-standard halves where itera
 | **noise refit** (driver 9, `TAU_MODE=residual`) | 4 iters, stopped | identical to driver 8 to 3 decimals; fitted tau/tau0 = 1.000. Not the cause. |
 | **pose from V0-only CC** (driver 10, `POSE_FROM=v0`) | 10 iters | identical trajectory to driver 8 (V(z) below V0 from iter 7, final 0.4741 vs 0.4842). Not the cause. |
 | **M-step isolation** (`hetero_mstep_check.py`, true poses, exact latents) | — | U comes back at 0.75 of the true amplitude, V0 at 0.82 (gridding attenuation, both); noise-correlated latents do NOT inflate (0.758). The E-M loop at the TRUE pose does not inflate either (product of U scale and z slope stays 0.6–0.7 over 6 rounds). The inflation needs the pose search. |
+| **MODES=1** (driver 11) | 8 iters | identical to driver 10 (weights were near one-hot at SNR 0.3). Not the cause. |
+| **oracle poses** (driver 12, `POSE_FROM=oracle`) | 8 iters | same decline from a higher baseline (V0 26 px vs 24). Not the cause. |
+| **split random starts** (driver 13, `INIT_SPLIT=1`) | 8 iters | identical to driver 12. Not the cause. |
+| **K=2** (driver 14) | 8 iters | same decline. |
+| **FOUND (state dumps, `SAVE=`)** | — | **V0's norm falls 77 → 58 → 38 over iterations 3–8 while U's norm stays 4.1–4.3 and its per-shell content is stationary.** FSC is scale-invariant so V0's scores never showed it. Mechanism: the trilinear splat + per-voxel normalisation returns volumes attenuated (0.82 for V0, 0.75 for U); the flat-prior gain absorbs the attenuation each E-step, so nothing pins V0's scale, while the unit z prior pins U's. The U/V0 ratio drifts, V(z̄_c) over-represents the motion at the extremes, maps degrade. There never was an "amplitude bias" in the component. |
+| **gridding correction** (`pipeline.gridding_correction`, per-shell, measured once from noiseless slices of the consensus at the run's poses) | isolation check | V0 scale 0.82 → 0.99, U 0.75 → 0.92; true-pose E-M loop product 0.66 → 0.81. Driver 15 (grid poses, MODES=10, K=1, GRID_CORR=1) is the confirmation run. |
 
 New/changed code this session: `hetero.py` (Gram-over-γ, closed-form gain+z marginal, per-voxel
 M-step, PCA gauge, leakage), `pipeline.py` (Bank with complex64 option, memory-safe neighbour index
@@ -225,7 +231,10 @@ pattern from a shell whose own command line contains it (it kills the shell; use
   covariance eigenvalue competes with the noise bulk edge σ²(1+√(p/n_eff))²; at 8,000 particles the
   ratio is ~1 unfiltered and ~4 band-limited to k≤24. Band-limiting the component is the cheap
   lever; more particles is the honest one (ratio ∝ N).
-- **Amplitude bias is the open problem, and it is now localised to the pose search.** Three
+- **RESOLVED (6 Sep, late): the "amplitude bias" was V0's scale drifting down under the gridding
+  attenuation** (see table). Fix in place: `GRID_CORR=1` (default) in the pilot. Everything below
+  this bullet in the original text is the falsified hunt, kept for the record.
+- **(historical) Amplitude bias is the open problem, and it is now localised to the pose search.** Three
   hypotheses were tested and falsified on 6 Sep: the noise level (refit from the residual: no
   change), the pose selection by the K-component marginal (pose from V0-only CC: no change), and
   the M-step (isolation check with true poses: unbiased; the full E-M loop at the true pose does
@@ -248,7 +257,17 @@ pattern from a shell whose own command line contains it (it kills the shell; use
 
 ## 3. Exact Next Action
 
-Read the result of driver 11 (`scratchpad/pilots11.log` if the session is still alive, else re-run):
+**Read driver 15** (`dcryolike/results/hetero_pilots_D96_driver15_gridcorr.txt` once archived; else
+`scratchpad/pilots15.log`). Success = `meanFSC V(z)` stays above `V0` from iteration 2 through 8
+and the printed `|V0|` stays ~77 instead of falling. If so: the linear pilot works end to end; go to
+NP=16000, then K=2, then the single-pose vs shortlist-averaged latent comparison at SNR 0.3/0.1/0.05.
+If `|V0|` still drifts: the correction was measured with CTF but without the τ/ω weights; measure it
+inside the same weighted accumulation (pass the run's weights to `gridding_correction`).
+
+Also: make the M-step check assert the corrected scales (≥0.9) and register it in `run_tests.sh`;
+the per-iteration `|V0|` print stays.
+
+(older text follows) Read the result of driver 11 (`scratchpad/pilots11.log` if the session is still alive, else re-run):
 
 ```
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
