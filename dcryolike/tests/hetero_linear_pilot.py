@@ -89,7 +89,7 @@ def estep(V0,U,ids,tidx,bg):
     n=len(ids); M=tidx.shape[1]; K1=K+1
     vol_list=[V0]+[U[k] for k in range(K)]
     lse=torch.empty(n,M,dtype=torch.float64,device=dev); Ea=torch.empty(n,M,K1,dtype=torch.float64,device=dev)
-    Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone(); t0=time.time()
+    Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone(); t0=time.monotonic()
     for i in range(0,n,EB):
         t0=duty_sleep(t0)
         j=min(i+EB,n); nb=j-i; g_=ids[i:j]; v=tidx[i:j].reshape(-1)
