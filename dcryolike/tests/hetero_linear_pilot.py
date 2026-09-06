@@ -107,11 +107,18 @@ if K>0 and U_INIT=="truth":
     _,_,Vh=torch.linalg.svd(X,full_matrices=False)
     U_init=torch.stack([lowpassed(fourier_volume(Vh[k].reshape(D,D,D)*X.norm()/math.sqrt(NCONF)),R_INIT) for k in range(K)])
 elif K>0:
-    g=torch.Generator(device=dev).manual_seed(5)
-    U_init=torch.stack([lowpassed(fourier_volume(torch.randn(D,D,D,generator=g,dtype=torch.float64,device=dev)),R_INIT) for _ in range(K)])
-    U_init=U_init*(0.1*V0_init.norm()/U_init.reshape(K,-1).norm(dim=1)[:,None,None,None])
+    def rand_init(seed):
+        g=torch.Generator(device=dev).manual_seed(seed)
+        Ui=torch.stack([lowpassed(fourier_volume(torch.randn(D,D,D,generator=g,dtype=torch.float64,device=dev)),R_INIT) for _ in range(K)])
+        return Ui*(0.1*V0_init.norm()/Ui.reshape(K,-1).norm(dim=1)[:,None,None,None])
+    U_init=rand_init(5)
 else:
     U_init=torch.zeros(0,D,D,D,dtype=torch.float64,device=dev)
+# INIT_SPLIT=1: each half starts from its OWN random component. With a shared start, the
+# part of the start that survives EM is common to both halves, so the half-set FSC
+# shrinkage keeps it as if it were signal (observed: the shrunk component's norm doubles
+# between iterations 3 and 8 with no growth in its projection on the true component).
+INIT_SPLIT=os.environ.get("INIT_SPLIT","1")=="1"
 
 def estep(V0,U,ids,tidx,bg,wt0=None):
     """Coefficient posterior on the shortlist. POSE_FROM=v0: gamma from bg (the V0
@@ -164,11 +171,11 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
     return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
-print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
-state=[(V0_init.clone(),U_init.clone()) for _ in range(2)]
+state=[(V0_init.clone(),(rand_init(5+h) if (K>0 and U_INIT!="truth" and INIT_SPLIT) else U_init).clone()) for h in range(2)]
 tau_cur=tau.clone()                                    # per-particle noise precision, refitted each E-step
 for it in range(1,ITERS+1):
     tau_ratio=[];zcons=[]
