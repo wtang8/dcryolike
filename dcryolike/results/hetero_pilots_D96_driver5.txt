@@ -1,0 +1,61 @@
+##### D96 LINEAR K1 SNR0.3  (03:36:05)
+##### D96 LINEAR K1 SNR0.3  (03:37:17)
+Traceback (most recent call last):
+  File "/home/wtang/cryoem/dcryolike/tests/hetero_linear_pilot.py", line 65, in <module>
+    p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/wtang/cryoem/dcryolike/dcryolike/generator.py", line 356, in generate_physical_hetero
+    images = torch.empty_like(clean)
+                        ^^^^^^^^^^
+RuntimeError: CUDA driver error: out of memory
+##### rc=1
+##### D96 LINEAR K0 SNR0.3  (03:38:50)
+Traceback (most recent call last):
+  File "/home/wtang/cryoem/dcryolike/tests/hetero_linear_pilot.py", line 65, in <module>
+    p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/wtang/cryoem/dcryolike/dcryolike/generator.py", line 353, in generate_physical_hetero
+    M = _polar_dft_matrix(polar_grid, D, device)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/wtang/cryoem/dcryolike/dcryolike/generator.py", line 227, in _polar_dft_matrix
+    return torch.exp(ph.to(dtype)) / D
+           ^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: CUDA driver error: out of memory
+##### rc=1
+##### D96 LINEAR K1 SNR0.1  (03:39:01)
+Traceback (most recent call last):
+  File "/home/wtang/cryoem/dcryolike/tests/hetero_linear_pilot.py", line 65, in <module>
+    p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO,backend=BACKEND)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/wtang/cryoem/dcryolike/dcryolike/generator.py", line 353, in generate_physical_hetero
+    M = _polar_dft_matrix(polar_grid, D, device)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/wtang/cryoem/dcryolike/dcryolike/generator.py", line 227, in _polar_dft_matrix
+    return torch.exp(ph.to(dtype)) / D
+           ^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: CUDA driver error: out of memory
+##### rc=1
+##### ALL DONE
+##### RELAUNCH after generator memory fix 03:40:56
+##### D96 LINEAR K1 SNR0.3  (03:40:56)
+LINEAR LATENT | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=0 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1  0.114  0.015  0.000    24.3p  24.3p  23.0p   |U|/|V0| 0.679  z std 0.447
+    2  0.136  0.020  0.000    24.8p  24.4p  23.0p   |U|/|V0| 0.610  z std 1.115
+    3  0.158  0.027  0.000    24.9p  24.5p  23.0p   |U|/|V0| 0.538  z std 1.470
+    4  0.180  0.035  0.000    24.9p  24.4p  22.9p   |U|/|V0| 0.479  z std 1.917
+##### rc=0
+##### D96 LINEAR K0 SNR0.3  (03:47:09)
+LINEAR LATENT | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=0 | U_KMAX=0 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1    nan    nan    nan    24.4p  24.4p  23.0p
+    2    nan    nan    nan    24.9p  24.9p  23.0p
+    3    nan    nan    nan    24.9p  24.9p  23.0p
+    4    nan    nan    nan    24.9p  24.9p  23.0p
+##### rc=0
+##### D96 LINEAR K1 SNR0.1  (03:53:24)
+Terminated
+##### rc=143
+##### ALL DONE

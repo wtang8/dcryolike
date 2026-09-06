@@ -36,7 +36,8 @@ from dcryolike.slicing import fourier_volume, fourier_circles, slice_points
 from dcryolike.generator import _slice
 from dcryolike.hetero import hetero_gram, marginal_loglik, fix_gauge, rotation_leakage, rank_correlation, latent_r2, align_bases
 from dcryolike.pipeline import (ShellMasks, res_at, to_real, temperature, Bank, neighbourhood,
-                                select_modes, reconstruct)
+                                select_modes, reconstruct, duty_sleep, GPU_DUTY)
+import time
 
 dev=os.environ.get("DEV","cuda"); BACKEND=os.environ.get("BACKEND","nufft"); SMOKE=os.environ.get("SMOKE","0")=="1"
 D=int(os.environ.get("D","32" if SMOKE else "48")); NP=int(os.environ.get("NP","400" if SMOKE else "8000"))
@@ -88,8 +89,9 @@ def estep(V0,U,ids,tidx,bg):
     n=len(ids); M=tidx.shape[1]; K1=K+1
     vol_list=[V0]+[U[k] for k in range(K)]
     lse=torch.empty(n,M,dtype=torch.float64,device=dev); Ea=torch.empty(n,M,K1,dtype=torch.float64,device=dev)
-    Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone()
+    Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone(); t0=time.time()
     for i in range(0,n,EB):
+        t0=duty_sleep(t0)
         j=min(i+EB,n); nb=j-i; g_=ids[i:j]; v=tidx[i:j].reshape(-1)
         pts=slice_points(fourier_circles(th,cpo[v],caz[v],torch.zeros_like(caz[v])),rr)
         T=torch.stack([_slice(vk,pts,BACKEND) for vk in vol_list],1).reshape(nb,M,K1,S,P)
@@ -115,7 +117,7 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(shells.fsc(F0,Ftrue[c]))); rz.append(res_at(shells.fsc(Fc,Ftrue[c])))
     return np.mean(r0),np.mean(rz),Fz
 
-print(f"LINEAR LATENT | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)

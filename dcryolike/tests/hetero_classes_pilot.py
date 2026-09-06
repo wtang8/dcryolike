@@ -29,7 +29,7 @@ from cryolike.metadata import ViewingAngles
 from dcryolike.generator import hinge_phantom, generate_physical_hetero
 from dcryolike.slicing import fourier_volume
 from dcryolike.pipeline import (ShellMasks, res_at, to_real, temperature, Bank, neighbourhood,
-                                select_modes, reconstruct)
+                                select_modes, reconstruct, GPU_DUTY)
 
 dev=os.environ.get("DEV","cuda"); BACKEND=os.environ.get("BACKEND","nufft"); SMOKE=os.environ.get("SMOKE","0")=="1"
 D=int(os.environ.get("D","32" if SMOKE else "48")); NP=int(os.environ.get("NP","400" if SMOKE else "8000"))
@@ -68,7 +68,7 @@ else:
     pert=torch.randn(D,D,D,generator=g,dtype=torch.float64,device=dev)
     pert=lowpassed(fourier_volume(pert),R_INIT); pert=pert*(0.05*cons.abs().mean()/pert.abs().mean())
     base=lowpassed(cons,R_INIT); init=[base+pert,base-pert]
-print(f"DISCRETE CLASSES | physical SNR {SNR} | classes t=+-{math.degrees(T_CLASS):.0f} deg | {NP} particles, "
+print(f"DISCRETE CLASSES | GPU duty {GPU_DUTY:g} | physical SNR {SNR} | classes t=+-{math.degrees(T_CLASS):.0f} deg | {NP} particles, "
       f"GOLD halves of {NP//2} | init={INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}  {'---------- argmax ----------':^30}  {'---------- mixture ---------':^30}")
 print(f"{'':5}  {'acc':>7}{'vsTruth':>9}{'halfmap':>9}{'meanFSC':>9}  {'acc':>7}{'vsTruth':>9}{'halfmap':>9}{'meanFSC':>9}")
