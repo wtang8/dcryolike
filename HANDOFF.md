@@ -260,7 +260,35 @@ bank drawn from ground truth. Each was caught only by a check with a *predictabl
 
 ## 3. Exact Next Action
 
-**Heterogeneous reconstruction, gate zero** (as soon as the GPU is free):
+**GATE ZERO PASSED (2026-09-05, `dcryolike/results/hetero_gate0_D96.txt`).** Recall@100 of the
+consensus bank is flat in the arm swing at every SNR:
+
+| SNR  | swing 0 | +-10 deg (7 vox) | +-30 deg (21 vox) |
+|------|---------|------------------|-------------------|
+| 0.30 | 100.0%  | 100.0%           | 100.0%            |
+| 0.10 | 100.0%  | 100.0%           | 100.0%            |
+| 0.05 |  96.5%  |  96.5%           |  96.5%            |
+
+Top-1 loses a few points under motion (60 -> 54 -> 52% at SNR 0.1) but the shortlist does not,
+and inner/outer conformations recall equally. The shortlist survives motion: heterogeneity
+enters AFTER the shortlist, as designed.
+
+**Next: the pilots.** First shake out the NUFFT path with `SMOKE=1` on the GPU, then:
+
+```
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
+    venv/bin/python -u dcryolike/tests/hetero_classes_pilot.py            # SNR=0.1 default
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
+    env K=0 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py      # homogeneous baseline
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
+    env K=1 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py      # one component
+```
+
+Read: class accuracy and per-class FSC (stage 2); rho/R2 of z vs t, leakage, and whether the
+`V(z)` and `half` columns beat `V0` (stage 3). Note the 5 GB scope produced a CUDA "unknown
+error" once at D=96; 8 GB has been clean.
+
+The original gate instructions, for reference:
 
 ```
 systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 \
