@@ -176,192 +176,80 @@ disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
 
 ## 1. Current State
 
-**2026-09-04 (afternoon), heterogeneous reconstruction prepared, not yet run on the GPU.**
-Plan (linear latent model, exact marginalisation of gain+latent per pose, heterogeneity enters
-AFTER the V0 shortlist) is implemented and unit-verified on the CPU. New files:
-`dcryolike/hetero.py` (Gram-over-all-gamma, closed-form marginal, per-voxel (K+1)x(K+1) M-step,
-PCA gauge, rotation-leakage diagnostic), `dcryolike/pipeline.py` (Bank/select_modes/reconstruct
-lifted from the halfset script), `generator.hinge_phantom` + `generate_physical_hetero`,
-`tests/test_hetero.py` (14 checks, runs with `CUDA_VISIBLE_DEVICES=`), and three scripts:
-`tests/hetero_gate0.py` (D=96 recall vs arm swing, consensus bank), `tests/hetero_classes_pilot.py`
-(stage 2), `tests/hetero_linear_pilot.py` (stage 3). Both pilots execute end to end on the CPU
-through the gridding backend (`DEV=cpu BACKEND=gridding SMOKE=1`); their NUFFT/GPU path is
-untested. The phantom refactor is bit-identical to the previous `gaussian_atom_volume`.
+**2026-09-06 (early morning). Heterogeneous reconstruction: gate passed, pilots run, one component
+of a real hinge motion recovered from a random start at D=96.** Everything is committed and pushed
+(`main`); logs are under `dcryolike/results/hetero_*`. The machine was shut down at the end of the
+session on the user's instruction.
 
-**WSL crashes today (14:24, 15:05, 15:25, 15:31) were host-RAM OOM kills** of the four-worker
-`measure_pose_search` job (5 x ~2 GB in a 15.9 GB VM), not dcryolike. Run heavy scripts under
-`systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 ...` and not concurrently with
-that job.
+Chain of results, in order (all physical noise, gold-standard halves where iterative):
 
-**Implemented and verified — 11 suites / 50 assertions, `./dcryolike/run_tests.sh` → ALL GREEN.**
-Relocatable: suite and harness both verified running from a foreign checkout invoked from `/`.
+| step | setting | result |
+|---|---|---|
+| gate zero | D=96, consensus bank, arm swing 0/±10/±30° | recall@100 flat: 100/100/96.5% at SNR 0.3/0.1/0.05 for every swing. Heterogeneity enters AFTER the shortlist. |
+| E-step isolation | true pose + true component | rho(z,t) 0.85 (SNR 0.1), 0.92 (0.3) at D=96, matching the LS bound; at D=32 only 0.13 (box too small). E-step verified. |
+| classes, D=48, SNR 0.1, ±15° | consensus / random / truth start | 51% / 51% / 58%: per-particle class evidence ~0.4 nats; maps drift back to consensus. Machinery classifies at SNR 0.3 ±30° from truth (84%). |
+| linear, D=48 | K=1 any variant | rho ≤ 0.02: D=48 SNR 0.1 has 1.5% top-1 pose recall, nothing per-particle can work. |
+| linear, D=96, SNR 0.3, unfiltered | 10 iters | rho 0.11→0.82, but amplitude 0.75 vs true 0.16 (PPCA noise inflation); V(z) worse than V0. |
+| linear, D=96, band-limited k≤24 | 4 iters | rho 0.11→0.53, faster (noise dimensionality cut 8×). |
+| linear, D=96, SNR 0.1, band-limited + half-set FSC shrinkage | 10 iters | rho 0.78, R² 0.59, shrunk amplitude 0.164 (true ≈0.16). V(z)=V0 at the 0.5 crossing (component resolved only to ~10 px). |
+| linear, D=96, SNR 0.3, band-limited + shrinkage | 10 iters | rho 0.89, R² 0.80 by iter 4; **V(z) beats V0 in mean FSC at iters 2–5 (peak 0.4872 vs 0.4835)**, then the amplitude bias (shrunk 0.06→0.12, rising) overtakes and V(z) falls below V0 from iter 7. |
 
-| module | status |
-|---|---|
-| `dcryolike/slicing.py` | NUFFT + gridding slices. NUFFT backward = analytic adjoint; point gradients finite-difference verified. Central slice theorem 4e-15, forward vs exact DFT 9e-7, adjoint cosine 1.0000000000. |
-| `dcryolike/adaptive.py` | Shared-radius 2D/3D shells. Rotation preserves radius (1.4e-14) → **no cross-frequency interpolation**, all error angular. |
-| `dcryolike/spheregrid.py` | SphereShell-backed ring grid. Quadrature 3.8e-13, adjoint 1.5e-16. sin_taper/HEALPix were built, measured, and **dropped** (SphereShell tied on interpolation, ~7000× better on quadrature). |
-| `dcryolike/ill.py` | Gain/offset/noise-marginalised likelihood + **per-γ Isx correction**. Restores exact invariance (1.000000 vs 0.921 at gain 0.4/offset −30). Cost 0.66→1.57 ms. |
-| `dcryolike/generator.py` | Synthetic particles; CTF matches CryoLike `_ctf_relion` to 1e-13. SNR calibrated to 0.21%. |
-| `dcryolike/refine.py` | Gradient pose refinement vs exact likelihood. |
-| `dcryolike/proposal.py` | Two-tower net on cross-shell phase features. **Works but under-performs — see §2.** |
+New/changed code this session: `hetero.py` (Gram-over-γ, closed-form gain+z marginal, per-voxel
+M-step, PCA gauge, leakage), `pipeline.py` (Bank with complex64 option, memory-safe neighbour index
+for 30k views, `duty_sleep` **GPU duty cycle default 0.8**), generator (`hinge_phantom`,
+`generate_physical_hetero` chunked; DFT matrix chunked), `tests/test_hetero.py` (17 checks, in the
+harness), `tests/hetero_estep_check.py`, `tests/hetero_gate0.py`, `tests/hetero_classes_pilot.py`
+(INIT=consensus|random|truth), `tests/hetero_linear_pilot.py` (K, U_KMAX, U_SHRINK, U_INIT, D,
+VIEW_DEG, mean-FSC columns).
 
-**Not done / known broken:**
-- **The per-γ ILL fix is NOT ported upstream.** `cryolike/.../integrated_log_likelihood_kernel.py`
-  still has the broadcast `Isx_ms = torch.sum(..., dim=(2,3))`. Patch = replace that line + its two
-  `unsqueeze` calls with `isx_per_gamma(...).unsqueeze(2)` plus a dtype cast (irfft returns real).
-  Everything downstream (A/B/C/D, constant) unchanged; reduces to current behaviour for a radial mask.
-- `proposal_net.pt` (46 MB) is **local only**, gitignored. Regenerate via `tests/train_proposal.py` (~7 min).
-- Analysis scripts (`recall_sweep`, `basin_*`, `deconv_*`, `iterative_*`, `mixture_vs_argmax`,
-  `capture_vs_box`, `adaptive_sampling`) assert nothing by design — runner labels them `NO ASSERTIONS`.
-- No CI. One machine, one GPU (RTX 5070 Ti / sm_120 — torch **must** come from the cu128 index).
+Operational: the WSL crashes on 4 Sep were host-RAM OOM from the user's own multi-worker job, not
+dcryolike. Run heavy scripts in `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0`
+(5 GB once gave a CUDA "unknown error" at D=96). D=96 generation peaked >13 GB GPU before the
+chunking fix; ~9 GB after. Pausing a torch process from outside (SIGSTOP) does NOT cap GPU use —
+kernels are queued seconds ahead — hence the in-process duty cycle. Never `pgrep -f`/`pkill -f` a
+pattern from a shell whose own command line contains it (it kills the shell; use
+`scratchpad/stop_run.sh`-style helper scripts).
 
 ## 2. Working Hypotheses & Roadblocks
 
-**The live question: is the proposal network worth building at all?** Evidence has moved against its
-original justification and toward marginalisation instead.
-
-Measured chain (D=48 phantom, SNR by our convention — internally consistent only, do not compare to
-literature figures):
-1. Exact-likelihood ceiling at SNR 0.05: top-1 **17.5%**, recall@500 **95.5%** → proposal framing beats
-   point estimation. *(This is the result in the published artifact.)*
-2. But refinement reaches the information limit **from any starting grid** — 208 refs ≡ 7,956 refs,
-   tails included. So the coarse search was already cheap; the network's speed argument mostly evaporates.
-3. Angular precision is noise-limited, not resolution-limited: σ ∝ SNR^-0.5 over five decades, no floor.
-   Pose error of 2–5° costs 0–1 resolution shells → **precision is essentially solved**.
-4. The real damage is **bias**: 16% of particles at SNR 0.05 land in a wrong basin, and their runner-up
-   scores 0.997 of the top — statistically tied. Argmax converts a coin flip into coherent wrong signal.
-5. Deconvolution of pose blur **does not work** (0 of 2–5 shells recovered even with oracle knowledge;
-   a per-shell scalar cannot change FSC at all). Blur must be prevented, not undone.
-6. Mixture (top-10 posterior-weighted) vs argmax: **+12.9% (artifact) → +3.9% → −2..−5% → +2..+6%**
-   across contaminated / decontaminated / shared-reference-iterative / **cross-referenced half-set**.
-   Only the last protocol is trustworthy. The effect is real, small, and protocol-dependent.
-
-**Architectural commitments:**
-- The network **proposes**, never decides. Exact likelihood adjudicates → floor = current method.
-  (cryoDRGN-AI rejects amortised encoders for the same reason: they memorise on noisy data.)
-- Shared radial list for 2D and 3D grids; SphereShell only.
-- Score against **ground truth**, not half-map FSC, whenever the reference could be contaminated.
-
-**Roadblocks:**
-- **Reference decoupling is load-bearing.** A particle influencing the map it is scored against reversed
-  the mixture result's sign. Any new loop must cross-reference half-sets.
-- **Both branches overfit after iteration 2–3** even cross-referenced (argmax 0.4331→0.4547 peak then
-  decay). Missing ingredient is a **resolution-limited reference** (low-pass between iterations), not
-  more iterations. Until that is added, iterative numbers are confounded.
-- Proposal net is at 73.5% recall@500 vs the 95.5% ceiling at SNR 0.05. **Untested hypothesis:** hard
-  phase normalisation `C/|C|` discards reliability, giving a pure-noise coefficient the same weight as a
-  confident one. Proposed fix: Wiener shrinkage `C/(|C|+λ)` with λ tied to the noise level.
-- The half-set reference is still built from **true poses** — more favourable than a real refinement.
-
-**Traps that already burned us** (see `dcryolike/README.md`): gradcheck+adjoint pass on a wrong operator;
-coverage metric inspected padding columns; `|FFT_θ|` is provably identical for antipodal views; pose-search
-bank drawn from ground truth. Each was caught only by a check with a *predictable* answer.
+- **The plan's premise holds.** Motion does not touch the shortlist at D=96 (gate), so pose
+  proposal + marginalisation extends to heterogeneity unchanged. Verified, not assumed.
+- **Per-particle decisions are information-limited; population models are not.** Classification
+  fails at SNR 0.1 for a ±15° swing (0.4 nats/particle) while the linear model pools 4,000 weak
+  signals and recovers the component (rho 0.78–0.89). This is the 3DVA-vs-classification story,
+  reproduced with exact likelihoods.
+- **Detection threshold.** With N particles per half and p Fourier coordinates, the motion's
+  covariance eigenvalue competes with the noise bulk edge σ²(1+√(p/n_eff))²; at 8,000 particles the
+  ratio is ~1 unfiltered and ~4 band-limited to k≤24. Band-limiting the component is the cheap
+  lever; more particles is the honest one (ratio ∝ N).
+- **Amplitude bias is the open problem.** EM with the diagonal-in-Fourier M-step inflates the
+  component: the noise in E[z] is correlated with U itself in BOTH halves, so it is a systematic
+  bias that the half-set FSC shrinkage slows but does not remove (SNR 0.3: V(z) beats V0 for
+  iterations 2–5, then falls below). Candidate fixes, in order of principle: (a) PPCA-consistent
+  scale, i.e. subtract the noise contribution from the component's fitted variance per shell
+  (λ − σ²), (b) the exact coupled normal equations by conjugate gradient instead of the per-voxel
+  diagonal approximation, (c) stop early at the mean-FSC peak (a cheat for diagnostics only).
+- **The FSC 0.5 crossing is blind to the component** (resolved only to 10–14 px while the crossing
+  sits at 21–25 px). Judge V(z) by mean FSC or by a masked real-space CC on the arm.
+- Symmetry-breaking for discrete classes (random split) does not work at 4,000 particles per
+  half even at SNR 0.3; not central to the plan, parked.
 
 ## 3. Exact Next Action
 
-**GATE ZERO PASSED (2026-09-05, `dcryolike/results/hetero_gate0_D96.txt`).** Recall@100 of the
-consensus bank is flat in the arm swing at every SNR:
+Fix the amplitude bias, then re-run the D=96 SNR 0.3 linear pilot and confirm V(z) stays above V0:
 
-| SNR  | swing 0 | +-10 deg (7 vox) | +-30 deg (21 vox) |
-|------|---------|------------------|-------------------|
-| 0.30 | 100.0%  | 100.0%           | 100.0%            |
-| 0.10 | 100.0%  | 100.0%           | 100.0%            |
-| 0.05 |  96.5%  |  96.5%           |  96.5%            |
-
-Top-1 loses a few points under motion (60 -> 54 -> 52% at SNR 0.1) but the shortlist does not,
-and inner/outer conformations recall equally. The shortlist survives motion: heterogeneity
-enters AFTER the shortlist, as designed.
-
-**Next: the pilots.** First shake out the NUFFT path with `SMOKE=1` on the GPU, then:
-
+1. In `hetero_linear_pilot.py`, replace the FSC shrinkage with a PPCA-consistent per-shell scale:
+   per shell, estimate the noise power in U from the half-difference (U_a − U_b)/2 and subtract it
+   from the component power before rescaling (λ_shell − σ²_shell, floored at 0). Keep `U_KMAX=24`.
+2. Run (about 45 min at the 80% duty):
 ```
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-    venv/bin/python -u dcryolike/tests/hetero_classes_pilot.py            # SNR=0.1 default
-systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-    env K=0 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py      # homogeneous baseline
-systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-    env K=1 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py      # one component
+    env D=96 K=1 SNR=0.3 ITERS=10 U_KMAX=24 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py
 ```
+   Success = mean-FSC V(z) > V0 at every iteration from 2 on, shrunk amplitude ≈ 0.16 and flat.
+3. Then NP=16000 (threshold ratio doubles) and K=2 (a hinge is nonlinear; the second component
+   should carry the quadratic term, leakage should stay ~0).
+4. Only after that: cut refinement cost, write-up.
 
-Read: class accuracy and per-class FSC (stage 2); rho/R2 of z vs t, leakage, and whether the
-`V(z)` and `half` columns beat `V0` (stage 3). Note the 5 GB scope produced a CUDA "unknown
-error" once at D=96; 8 GB has been clean.
-
-The original gate instructions, for reference:
-
-```
-systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 \
-    venv/bin/python -u dcryolike/tests/hetero_gate0.py
-```
-
-It prints recall@K of the consensus-volume bank at D=96 for arm swings of 0, +-10, +-30 degrees
-at physical SNR 0.3 / 0.1 / 0.05 (the swing-0 rows must reproduce the D=96 table above). The
-decision: flat recall@100 across swing means the shortlist survives motion and the plan stands
-(run `hetero_classes_pilot.py`, then `hetero_linear_pilot.py` with `K=0` and `K=1` at SNR 0.1
-and compare the `V(z)` and `half` columns to `V0`); a collapse means the search itself must be
-class-aware. Before either pilot, run `GPU: ./dcryolike/run_tests.sh` (test_hetero TEST 7 is the
-generator bridge, GPU-only) and a `SMOKE=1` pilot on the GPU to shake out the NUFFT path.
-
-Previously queued (still valid, lower priority now):
-
-**The diagnostic phase is complete.** GOLD + raw reference is the protocol: honest FSC, stable
-from iteration 2, mixture margin intact. The low-pass control was tested twice and failed both
-ways (inflation under cross-ref; a 5–10% downward spiral under gold). The residual decline is
-mostly the privileged clean initial reference. What remains is confirmation and engineering,
-not diagnosis:
-
-1. **Mixture at D=96, GOLD raw-ref protocol.** The margin is a D=48 result; D=96 is what
-   transfers. Heavy (~30 min uncontended); use the lowmem pattern. This is the last
-   measurement the marginalisation claim needs.
-2. **Soft SSNR weighting of the reference** (RELION-style, per-shell, smooth). The only
-   principled version of the reference-filtering idea left untested. Expected gain is small
-   (recovering ≤1–2%), and it risks the same spiral if the weighting is too aggressive. Low
-   priority unless (1) shows the margin is reference-quality-limited at D=96.
-3. **Cut refinement cost** (99% of per-iteration time): fewer steps, top mode only, every
-   Nth iteration.
-4. **Write-up.** The body of validated results is now substantial: differentiable CryoLike with
-   analytic adjoints; the physical-noise ceiling at D=96; precision without a resolution floor;
-   grid-independence of refinement; the antipodal degeneracy; deconvolution impossibility;
-   marginalisation margin across five protocols; and the protocol lessons (contamination,
-   noise model, cross-referencing, hard low-pass). That is a paper's worth of negative and
-   positive results.
-
-```
-./dcryolike/run_tests.sh
-```
-
-Then paste into a new session:
-
-> Read `HANDOFF.md` (the REVIEW FINDING block first, including the D=96 table) and
-> `dcryolike/README.md` in /home/wtang/cryoem. The noise model was replaced by
-> `generator.generate_physical()` and the recall ceiling has been re-established at D=96.
-> The diagnostic phase is complete (HANDOFF review block, "PROTOCOL VERDICT"). GOLD + raw
-> reference is the protocol. Now confirm the marginalisation margin at realistic box size:
-> port `tests/iterative_halfset_physical.py` to D=96 using the memory pattern from
-> `tests/recall_ceiling_physical_boxsize_lowmem.py` (P=256, chunked bank, complex64,
-> `python -u`), run `GOLD=1 LOWPASS=0` at physical SNR 0.1 and 0.05 with 8000 particles,
-> 6 iterations. Report per iteration truth FSC, half-map FSC, mean FSC for argmax and
-> mixture, and the margin. Keep the measured-C posterior temperature. If the margin holds
-> at D=96, the marginalisation claim is complete; if it vanishes, report that plainly.
-> Stop and diagnose if any control looks impossible. `dcryolike/tests/iterative_halfset.py` runs cross-referenced
-> half-set refinement (argmax vs top-10 posterior mixture), scored against ground truth. Both branches
-> peak at iteration 2–3 then decay, which is overfitting to the reference and confounds the
-> mixture-vs-argmax comparison.
-> Add a resolution-limited reference: low-pass each new half-map before it is used as the pose-search
-> bank, with the cutoff set from that half-map's own FSC-vs-truth (or a fixed schedule, whichever you
-> can justify). Re-run `SNR=0.05` and `SNR=0.1` and report whether the decay disappears and whether the
-> mixture's +2..+6% mean-FSC advantage survives.
-> Score against ground truth, never half-map FSC. Do not let a particle influence the reference it is
-> posed against. If a control result looks impossible (e.g. true poses losing), stop and diagnose before
-> reporting numbers.
-
-Files to reference: `dcryolike/tests/iterative_halfset.py`, `dcryolike/tests/iterative_refine.py`
-(shared-reference variant, for contrast), `dcryolike/dcryolike/generator.py`.
-
-**Alternates:** (a) Wiener shrinkage in `dcryolike/proposal.py::crossshell_phase`, retrain via
-`tests/train_proposal.py`, compare to the ceiling table in `tests/recall_sweep.py`.
-(b) Port the per-γ ILL patch upstream into `cryolike/` and open a PR to flatironinstitute/CryoLike.
-
-**Published artifact** (private, yours): https://claude.ai/code/artifact/5eb5c62a-4a61-4e50-96b8-0526f66e6632
-— the recall-ceiling writeup. Note it predates findings 2–6 above; §2's later results are not in it.
+Previously queued and still valid: mixture at D=96 on the GOLD raw-reference protocol (homogeneous
+claim); soft SSNR reference weighting (low priority).
