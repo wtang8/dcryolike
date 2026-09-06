@@ -257,6 +257,14 @@ pattern from a shell whose own command line contains it (it kills the shell; use
 
 ## 3. Exact Next Action
 
+**CORRECTION (7 Sep, from `tests/test_hetero_scale.py`): the GAUGE PIN is the load-bearing fix,
+not the gridding correction.** All four combinations, E-M at true poses, D=48, drift of |V0| over
+4 iterations: correction+gauge +1.1%, gauge only +1.0%, correction only −13.5%, neither −13.7%.
+The gauge pin (multiply by the mean posterior gain each M-step) is what makes the scale stationary;
+the per-shell correction only sets the constant it settles at (and closes the ~15% attenuation, so
+the two together are still the right configuration). The 6 Sep text below, which credits the
+correction, is superseded on that point; its diagnosis of the mechanism stands.
+
 **CONFIRMED (6 Sep, 23:40). Drivers 15 and 16** (`results/hetero_pilots_D96_driver15_gridcorr.txt`,
 `..._driver16_gridcorr_gauge.txt`): with the gridding correction the model's volumes stay above the
 consensus, +0.0036–0.0038 mean FSC from iteration 4 through 8 (every earlier run had fallen below by

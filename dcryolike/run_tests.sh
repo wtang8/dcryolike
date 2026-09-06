@@ -49,6 +49,7 @@ run dcryolike/tests/test_refine.py     "pose refinement"      900 5
 run dcryolike/tests/test_proposal.py   "proposal features/net" 600 5
 run dcryolike/tests/test_ill.py        "marginalised likelihood" 600 2
 run dcryolike/tests/test_hetero.py     "heterogeneous model"  600 12
+run dcryolike/tests/test_hetero_scale.py "reconstruction scale" 900 4
 echo
 echo "=========== ANALYSIS SCRIPTS (exit-code only, not verification) ==========="
 run dcryolike/tests/recall_sweep.py    "recall ceiling sweep"  600 0
