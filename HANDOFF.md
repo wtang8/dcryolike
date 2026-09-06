@@ -193,6 +193,9 @@ Chain of results, in order (all physical noise, gold-standard halves where itera
 | linear, D=96, band-limited k≤24 | 4 iters | rho 0.11→0.53, faster (noise dimensionality cut 8×). |
 | linear, D=96, SNR 0.1, band-limited + half-set FSC shrinkage | 10 iters | rho 0.78, R² 0.59, shrunk amplitude 0.164 (true ≈0.16). V(z)=V0 at the 0.5 crossing (component resolved only to ~10 px). |
 | linear, D=96, SNR 0.3, band-limited + shrinkage | 10 iters | rho 0.89, R² 0.80 by iter 4; **V(z) beats V0 in mean FSC at iters 2–5 (peak 0.4872 vs 0.4835)**, then the amplitude bias (shrunk 0.06→0.12, rising) overtakes and V(z) falls below V0 from iter 7. |
+| **noise refit** (driver 9, `TAU_MODE=residual`) | 4 iters, stopped | identical to driver 8 to 3 decimals; fitted tau/tau0 = 1.000. Not the cause. |
+| **pose from V0-only CC** (driver 10, `POSE_FROM=v0`) | 10 iters | identical trajectory to driver 8 (V(z) below V0 from iter 7, final 0.4741 vs 0.4842). Not the cause. |
+| **M-step isolation** (`hetero_mstep_check.py`, true poses, exact latents) | — | U comes back at 0.75 of the true amplitude, V0 at 0.82 (gridding attenuation, both); noise-correlated latents do NOT inflate (0.758). The E-M loop at the TRUE pose does not inflate either (product of U scale and z slope stays 0.6–0.7 over 6 rounds). The inflation needs the pose search. |
 
 New/changed code this session: `hetero.py` (Gram-over-γ, closed-form gain+z marginal, per-voxel
 M-step, PCA gauge, leakage), `pipeline.py` (Bank with complex64 option, memory-safe neighbour index
@@ -222,13 +225,22 @@ pattern from a shell whose own command line contains it (it kills the shell; use
   covariance eigenvalue competes with the noise bulk edge σ²(1+√(p/n_eff))²; at 8,000 particles the
   ratio is ~1 unfiltered and ~4 band-limited to k≤24. Band-limiting the component is the cheap
   lever; more particles is the honest one (ratio ∝ N).
-- **Amplitude bias is the open problem.** EM with the diagonal-in-Fourier M-step inflates the
-  component: the noise in E[z] is correlated with U itself in BOTH halves, so it is a systematic
-  bias that the half-set FSC shrinkage slows but does not remove (SNR 0.3: V(z) beats V0 for
-  iterations 2–5, then falls below). Candidate fixes, in order of principle: (a) PPCA-consistent
-  scale, i.e. subtract the noise contribution from the component's fitted variance per shell
-  (λ − σ²), (b) the exact coupled normal equations by conjugate gradient instead of the per-voxel
-  diagonal approximation, (c) stop early at the mean-FSC peak (a cheat for diagnostics only).
+- **Amplitude bias is the open problem, and it is now localised to the pose search.** Three
+  hypotheses were tested and falsified on 6 Sep: the noise level (refit from the residual: no
+  change), the pose selection by the K-component marginal (pose from V0-only CC: no change), and
+  the M-step (isolation check with true poses: unbiased; the full E-M loop at the true pose does
+  not inflate). What the real pilot has that the isolated loop does not: (i) a 10-mode shortlist
+  mixture in which 9 modes are wrong poses whose fitted z is a noise fit that is nevertheless
+  inserted along U with its posterior weight, and (ii) grid poses 1.19° off the truth. (i) is the
+  prime suspect: at a wrong pose z = <y,T_U>/|T_U|^2 is a self-consistent noise projection, so
+  inserting z·y there always adds energy along U. The pending run (driver 11, `MODES=1`) tests
+  it. If MODES=1 removes the inflation, the fix is to insert the component from the top mode only
+  (or to marginalise z properly over modes with a shared z rather than a per-mode z); if it does
+  not, (ii) is next, testable by an oracle-pose pilot run.
+  Diagnostics now printed per iteration: fitted tau/tau0, z-consistency (var E[z] + E var), raw
+  U scale against the true PC at k<=14, slope of E[z] on the true latent, and their product
+  (1 = the true family amplitude; the isolated loop gives ~0.65 because of the 0.75 gridding
+  attenuation).
 - **The FSC 0.5 crossing is blind to the component** (resolved only to 10–14 px while the crossing
   sits at 21–25 px). Judge V(z) by mean FSC or by a masked real-space CC on the arm.
 - Symmetry-breaking for discrete classes (random split) does not work at 4,000 particles per
@@ -236,20 +248,25 @@ pattern from a shell whose own command line contains it (it kills the shell; use
 
 ## 3. Exact Next Action
 
-Fix the amplitude bias, then re-run the D=96 SNR 0.3 linear pilot and confirm V(z) stays above V0:
+Read the result of driver 11 (`scratchpad/pilots11.log` if the session is still alive, else re-run):
 
-1. In `hetero_linear_pilot.py`, replace the FSC shrinkage with a PPCA-consistent per-shell scale:
-   per shell, estimate the noise power in U from the half-difference (U_a − U_b)/2 and subtract it
-   from the component power before rescaling (λ_shell − σ²_shell, floored at 0). Keep `U_KMAX=24`.
-2. Run (about 45 min at the 80% duty):
 ```
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-    env D=96 K=1 SNR=0.3 ITERS=10 U_KMAX=24 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py
+    env D=96 K=1 SNR=0.3 ITERS=8 U_KMAX=24 MODES=1 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py
 ```
-   Success = mean-FSC V(z) > V0 at every iteration from 2 on, shrunk amplitude ≈ 0.16 and flat.
-3. Then NP=16000 (threshold ratio doubles) and K=2 (a hinge is nonlinear; the second component
-   should carry the quadratic term, leakage should stay ~0).
-4. Only after that: cut refinement cost, write-up.
+
+Compare with driver 10 (`dcryolike/results/hetero_pilots_D96_driver10_pose_v0.txt`): there the
+`product` column would read ~1.8 by iteration 8 and V(z) falls below V0 from iteration 7.
+
+1. **If MODES=1 holds the product near 0.65 and V(z) stays above V0:** the shortlist mixture is
+   the mechanism. Implement the principled version — one z per particle shared across its modes
+   (marginalise the pose with a common latent, instead of a per-mode latent fitted to each wrong
+   pose) — and re-run with MODES=10. Expect the pose-marginalisation gain (+1–4% in the
+   homogeneous work) to come back on top.
+2. **If MODES=1 still inflates:** the 1.19° grid pose error is the mechanism. Test with an
+   oracle-pose run (true poses, MODES=1) which must match the isolation loop (~0.65); then add
+   pose refinement (`refine.py`, marginal objective) before the E-step.
+3. Then NP=16000 and K=2 as before; then cut refinement cost, write-up.
 
 Previously queued and still valid: mixture at D=96 on the GOLD raw-reference protocol (homogeneous
 claim); soft SSNR reference weighting (low priority).

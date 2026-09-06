@@ -75,6 +75,34 @@ s_c=run("E[z]=z_LS (noise-correlated), v=0",zls,0.0)
 d=tau*ip(TU,TU).mean()   # crude single d for all (median-ish)
 dd=d.median() if d.dim()>0 else d
 zpm=zls*(dd/(dd+1)); s_d=run(f"E[z]=posterior mean (d={dd.item():.0f}), v=1/(d+1)",zpm,1.0/(dd.item()+1))
+# 5. the E-M LOOP at the true pose, no pose search, no band-limit: does it inflate?
+#    Two variants: (a) feed the M-step output straight back, (b) rescale it to a
+#    fixed small amplitude before the E-step, as the FSC shrinkage effectively does.
+from dcryolike.hetero import hetero_gram, marginal_loglik
+prior=torch.tensor([0.0,1.0],dtype=torch.float64,device=dev)
+gi_true=torch.remainder(torch.round(-p.gammas/(2*np.pi/P)).long(),P)
+pts0=slice_points(fourier_circles(th,p.polars,p.azimus,torch.zeros_like(p.azimus)),rr)
+def estep_true(U):
+    Ea=torch.empty(NP,1,2,dtype=torch.float64,device=dev); Eaa=torch.empty(NP,1,2,2,dtype=torch.float64,device=dev)
+    for i in range(0,NP,64):
+        j=min(i+64,NP)
+        T=torch.stack([slice_nufft(cons,pts0[i:j]),slice_nufft(U,pts0[i:j])],1).reshape(j-i,1,2,S,P)
+        A,b,Gyy=hetero_gram(p.images_fourier[i:j],T,p.ctf[i:j],w)
+        _,mean,cov=marginal_loglik(A,b,Gyy,tau[i:j],prior)
+        g=gi_true[i:j]; ar=torch.arange(j-i,device=dev)
+        mu=mean[ar,0,g]; cv=cov[ar,0,g]
+        Ea[i:j,0]=mu; Eaa[i:j,0]=cv+mu[:,:,None]*mu[:,None,:]
+    return Ea,Eaa
+bgt=torch.zeros(NP,NP,dtype=torch.float64,device=dev); bgt[ids,ids]=-(gi_true.double())*(2*np.pi/P)
+for variant in ("free","held at 0.3"):
+    U_cur=0.3*U_TRUE; print(f"  E-M loop at the true pose, component {variant}:")
+    for it in range(1,7):
+        Ea,Eaa=estep_true(U_cur)
+        zm=Ea[:,0,1]; slope=(((zm-zm.mean())*(z-z.mean())).sum()/((z-z.mean())**2).sum()).item()
+        F=reconstruct(p,ids,tidx,wt,bgt,th,cpo,caz,rr,w,D,K=1,Ea=Ea,Eaa=Eaa,tau=tau)
+        U_raw=to_real(F[1]); sc=scale(F[1],24)
+        print(f"    it {it}: E[z] slope {slope:.3f} std {zm.std().item():.3f} | raw U scale k<=24 {sc:.3f} | product {sc*slope:.3f} (1 = true)")
+        U_cur=U_raw if variant=="free" else U_raw*(0.3*U_TRUE.norm()/U_raw.norm())
 ok=abs(s_a[1]-1)<0.1 and abs(s_b[1]-1)<0.1
 print(f"\nM-step returns the true amplitude from exact latents (k<=24 within 10%): {_v(ok)}")
 print(f"noise-correlated latents inflate it: k<=24 scale {s_c[1]:.3f} (LS), {s_d[1]:.3f} (posterior mean)")

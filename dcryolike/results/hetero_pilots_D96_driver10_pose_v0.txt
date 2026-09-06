@@ -1,0 +1,16 @@
+##### D96 LINEAR K1 SNR0.3 U_KMAX=24 ITERS=10 POSE=v0  (21:36:11)
+LINEAR LATENT | GPU duty 0.8 | U_SHRINK=1 TAU=residual POSE=v0 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7852 beta median 5313.9
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+    1  0.113  0.015  0.000    24.4p  24.4p  23.0p  meanFSC V0 0.4811 V(z) 0.4812   |U|/|V0| 0.196  z std 0.435  U halfFSC0.5 9p |U|shr 0.025  tau/tau0 0.976  z-consistency 0.37
+    2  0.588  0.349  0.001    24.9p  24.9p  23.0p  meanFSC V0 0.4837 V(z) 0.4854   |U|/|V0| 0.126  z std 1.187  U halfFSC0.5 11p |U|shr 0.042  tau/tau0 0.998  z-consistency 1.92
+    3  0.859  0.727  0.003    25.0p  25.0p  23.0p  meanFSC V0 0.4837 V(z) 0.4874   |U|/|V0| 0.119  z std 2.074  U halfFSC0.5 14p |U|shr 0.058  tau/tau0 1.000  z-consistency 4.56
+    4  0.891  0.795  0.003    25.0p  25.0p  23.0p  meanFSC V0 0.4840 V(z) 0.4873   |U|/|V0| 0.129  z std 2.275  U halfFSC0.5 14p |U|shr 0.066  tau/tau0 1.000  z-consistency 5.56
+    5  0.890  0.798  0.003    25.0p  25.0p  23.0p  meanFSC V0 0.4841 V(z) 0.4867   |U|/|V0| 0.146  z std 2.336  U halfFSC0.5 14p |U|shr 0.075  tau/tau0 1.000  z-consistency 5.88
+    6  0.888  0.795  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4841 V(z) 0.4856   |U|/|V0| 0.166  z std 2.356  U halfFSC0.5 14p |U|shr 0.086  tau/tau0 1.000  z-consistency 5.98
+    7  0.887  0.792  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4842 V(z) 0.4839   |U|/|V0| 0.190  z std 2.364  U halfFSC0.5 14p |U|shr 0.099  tau/tau0 1.000  z-consistency 6.02
+    8  0.886  0.791  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4842 V(z) 0.4816   |U|/|V0| 0.218  z std 2.366  U halfFSC0.5 14p |U|shr 0.114  tau/tau0 1.000  z-consistency 6.03
+    9  0.885  0.790  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4843 V(z) 0.4784   |U|/|V0| 0.250  z std 2.367  U halfFSC0.5 14p |U|shr 0.131  tau/tau0 1.000  z-consistency 6.04
+   10  0.885  0.790  0.004    25.0p  25.0p  23.0p  meanFSC V0 0.4842 V(z) 0.4741   |U|/|V0| 0.287  z std 2.368  U halfFSC0.5 14p |U|shr 0.151  tau/tau0 1.000  z-consistency 6.04
+##### rc=0
+##### ALL DONE
