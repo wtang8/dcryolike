@@ -62,11 +62,13 @@ caz=va.azimus.to(dev).to(vol.dtype); cpo=va.polars.to(dev).to(vol.dtype); V=caz.
 # neighbour INDEX, not a V x V matrix: 30,522^2 booleans is 931 MB at D=96
 from dcryolike.pipeline import neighbourhood as _nbh
 NB,nd=_nbh(caz,cpo,NEIGH)
-p=generate_physical(vol,pg,NP,SNR,seed=17,device=dev,ctf_kwargs=ISO)
+p=generate_physical(vol,pg,NP,SNR,seed=17,device=dev,ctf_kwargs=ISO,keep_clean=False)
+_dummy=None
 In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2)))
 # ---- posterior temperature from MEASURED noise statistics ----
-_n=p.images_fourier-p.clean_fourier                    # pure noise, per particle
-_nw=(_n.abs()**2*w).sum(dim=(1,2))                     # weighted polar noise norm
+_nw=p.noise_norm_w.to(w.dtype)                         # weighted polar noise norm,
+# accumulated during generation (the noiseless stack is 0.8 GB at D=96 and was kept
+# only for this one number per particle)
 C=(_nw/(D*D*p.sigma_noise**2)).mean()                  # Parseval constant, grid+DFT dependent
 beta=In**2/(2*p.sigma_noise**2*C)
 _beta_old=In**2/(2*(_nw/w.sum()))                      # what the OLD formula would give here
@@ -123,6 +125,12 @@ def reconstruct(ids,sel_idx,sel_w,gam,lam=1e-3,B=250):
                    (c**2*wg).reshape(-1),num,den)
     return (num/(den+lam*den.mean())).reshape(D,D,D)
 
+def _mem(tag):
+    if torch.cuda.is_available() and os.environ.get("MEMLOG","1")=="1":
+        a=torch.cuda.memory_allocated()/1e9; m=torch.cuda.max_memory_allocated()/1e9
+        f=torch.cuda.mem_get_info()[0]/1e9
+        print(f"      [mem] {tag:22s} allocated {a:5.2f} GB  peak {m:5.2f} GB  device free {f:5.2f} GB",flush=True)
+
 def pose_search(dens_ref,ids):
     n=len(ids)
     # chunked bank: 30,522 views at D=96 is 3.1 GB in complex64 and cannot be built
@@ -146,6 +154,7 @@ def pose_search(dens_ref,ids):
         cc=cc/(Tn[i:j,:,None]*Ins[i:j,None,None])
         m,gi=cc.max(-1); bc[i:j]=m.to(bc.dtype); bg[i:j]=-(gi.to(bg.dtype))*(2*np.pi/P)
         del cc,If,cw
+    _mem("after search loop")
     del Tf,Tpow,Tn; torch.cuda.empty_cache()   # 3.1 GB, not needed past the search
     # the neighbourhood gather is (n, chunk, width) and width is ~55 views at D=96,
     # so the chunk has to be small or this is the peak of the whole run
@@ -155,6 +164,7 @@ def pose_search(dens_ref,ids):
         j=min(i+GC,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
     bc.masked_fill_(~(bc>=nbmax-1e-12),-2.0)   # in place: bc is not needed afterwards
     del nbmax
+    _mem("after neighbourhood")
     tcc,tidx=bc.topk(MODES,dim=1)
     lg=(beta[ids][:,None]*(tcc**2-tcc[:,:1]**2)).masked_fill(tcc<-1.0,-1e30)
     return tidx,torch.softmax(lg,dim=1),bg

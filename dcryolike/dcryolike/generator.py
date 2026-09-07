@@ -39,6 +39,8 @@ class Particles:
     ctf: torch.Tensor              # (n, n_shells, n_inplanes) real
     sigma_noise: torch.Tensor      # (n,) total complex noise std per grid point
     snr: float
+    noise_norm_w: torch.Tensor = None   # (n,) quadrature-weighted norm of the realised
+    # noise, accumulated during generation so the noiseless stack need not be kept
 
 
 def _phantom_atoms(D, n_atoms=400, radius_frac=0.30, seed=0, dtype=torch.float64):
@@ -270,7 +272,7 @@ def real_space_projections(volume, azimus, polars, gammas, device="cuda", backen
 
 
 def generate_physical(volume, polar_grid, n_particles, snr_real, box_size=None, seed=0,
-                      ctf_kwargs=None, device="cuda"):
+                      ctf_kwargs=None, device="cuda", chunk=1000, keep_clean=True):
     """Like generate(), but with real-space white noise and a real-space SNR."""
     D = volume.shape[-1]
     box_size = float(D) if box_size is None else box_size
@@ -290,21 +292,40 @@ def generate_physical(volume, polar_grid, n_particles, snr_real, box_size=None, 
     sig_var = proj.var(dim=(1, 2))
     noise_std = torch.sqrt(sig_var / snr_real)                     # per particle
 
+    # Chunked, and the noisy stack built in place over `clean`: at D=96 with 8,000
+    # particles the one-shot version held four (n,S,P) stacks plus the (S*P, D*D)
+    # transform matrix, ~5 GB, and a caller that then builds a 30k-view template bank
+    # needs 3 GB more. keep_clean=False drops the noiseless copy and carries the
+    # weighted noise norm instead (its only consumer was the temperature).
     gen = torch.Generator(device=device).manual_seed(seed + 99991)
     nreal = torch.randn(n_particles, D * D, generator=gen, dtype=dtype, device=device)
     nreal = nreal * noise_std[:, None]
-    M = _polar_dft_matrix(polar_grid, D, device)
-    npol = (nreal.to(torch.complex128) @ M.T).reshape(n_particles, polar_grid.n_shells,
-                                                       polar_grid.n_inplanes).to(clean.dtype)
-    # the polar DFT above and slice_nufft share the exp(-2 pi i k.x/D)/D convention
-    # only up to a D-dependent scale; calibrate so a CTF-free clean image and its
-    # own real-space projection agree in polar power
-    ref = (M @ proj.reshape(n_particles, -1).to(torch.complex128).T).T.reshape_as(npol)
-    scale = torch.sqrt((tmpl.abs() ** 2).sum(dim=(1, 2)) / (ref.abs() ** 2).sum(dim=(1, 2)))
-    npol = npol * scale[:, None, None]
-
-    images = clean + npol
-    return Particles(images, clean, azimus, polars, gammas, ctf, noise_std, snr_real)
+    cdt = torch.complex128 if dtype == torch.float64 else torch.complex64
+    M = _polar_dft_matrix(polar_grid, D, device, dtype=cdt, real_dtype=dtype)
+    S_, P_ = polar_grid.n_shells, polar_grid.n_inplanes
+    wq = torch.tensor(polar_grid.integration_weight_points, dtype=dtype,
+                      device=device).reshape(S_, P_)
+    tmpl_pow = torch.empty(n_particles, dtype=dtype, device=device)
+    for i in range(0, n_particles, chunk):
+        j = min(i + chunk, n_particles)
+        tmpl_pow[i:j] = (tmpl[i:j].abs() ** 2).sum(dim=(1, 2))
+    clean_keep = clean.clone() if keep_clean else None
+    noise_norm_w = torch.empty(n_particles, dtype=dtype, device=device)
+    # the polar DFT and slice_nufft share the exp(-2 pi i k.x/D)/D convention only up
+    # to a D-dependent scale; calibrate so a CTF-free clean image and its own
+    # real-space projection agree in polar power
+    for i in range(0, n_particles, chunk):
+        j = min(i + chunk, n_particles)
+        npol = (nreal[i:j].to(cdt) @ M.T).reshape(j - i, S_, P_).to(clean.dtype)
+        ref = (M @ proj[i:j].reshape(j - i, -1).to(cdt).T).T.reshape_as(npol)
+        scale = torch.sqrt(tmpl_pow[i:j] / (ref.abs() ** 2).sum(dim=(1, 2)))
+        npol *= scale[:, None, None]
+        noise_norm_w[i:j] = (npol.abs() ** 2 * wq).sum(dim=(1, 2))
+        clean[i:j] += npol                    # in place: `clean` becomes the noisy stack
+        del npol, ref, scale
+    del M, nreal, proj
+    return Particles(clean, clean_keep, azimus, polars, gammas, ctf, noise_std, snr_real,
+                     noise_norm_w=noise_norm_w)
 
 
 # ---------------------------------------------------------------------------
