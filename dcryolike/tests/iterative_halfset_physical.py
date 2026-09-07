@@ -44,6 +44,16 @@ SNR=float(os.environ.get("SNR","0.05")); ISO=dict(astig=0.0)
 # cutoff, so no ground truth leaks into the loop. Scoring is on the raw
 # reconstruction -- the filter only limits what the next iteration may chase.
 LOWPASS=os.environ.get("LOWPASS","0")=="1"
+# GAMMA_MARG=1: score a view by the MARGINAL over its in-plane angle (logsumexp) rather
+#   than its best angle. A view's posterior weight is an integral over gamma, not a max;
+#   CryoLike's integrated-likelihood kernel does this logsumexp and this search did not.
+# PEAKS=0: keep the top MODES views outright instead of only local maxima >= NEIGH apart,
+#   so a basin's WIDTH enters its weight. Weighting retained peaks by their summit alone
+#   is a Laplace approximation with the curvature term dropped: a broad basin and a sharp
+#   one with the same peak are not equally probable. With MODES large this becomes the
+#   proper marginal over the view grid.
+GAMMA_MARG=os.environ.get("GAMMA_MARG","0")=="1"
+PEAKS=os.environ.get("PEAKS","1")=="1"
 # GOLD=1: TRUE gold standard. Each half is posed against its OWN previous
 # reference, so the two halves are fully independent -- no cross-coupling.
 # Default (GOLD=0) is cross-referenced: A posed against B's map and vice versa,
@@ -131,6 +141,7 @@ def _mem(tag):
         f=torch.cuda.mem_get_info()[0]/1e9
         print(f"      [mem] {tag:22s} allocated {a:5.2f} GB  peak {m:5.2f} GB  device free {f:5.2f} GB",flush=True)
 
+_MASS_DONE=[False]
 def pose_search(dens_ref,ids):
     n=len(ids)
     # chunked bank: 30,522 views at D=96 is 3.1 GB in complex64 and cannot be built
@@ -142,7 +153,7 @@ def pose_search(dens_ref,ids):
         Tb=slice_nufft(dens_ref,slice_points(fourier_circles(th,cpo[i:j],caz[i:j],torch.zeros_like(caz[i:j])),rr)).reshape(j-i,S,P).to(CDTB)
         Tf[i:j]=torch.fft.fft(Tb,dim=-1).conj(); Tpow[i:j]=(Tb.abs()**2).sum(-1).to(DT)
         del Tb
-    crs=cr[ids]; Ins=In[ids]
+    crs=cr[ids]; Ins=In[ids]; bet=beta[ids]
     Tn=torch.sqrt(torch.einsum('vr,br->bv',Tpow,(wr[None,:]*crs**2).to(Tpow.dtype)))
     bc=torch.empty(n,V,device=dev,dtype=vol.dtype); bg=torch.empty(n,V,device=dev,dtype=vol.dtype)
     # the (b,V,P) correlation block is 1 GB per 16 images at D=96; keep it near 0.5 GB
@@ -152,22 +163,44 @@ def pose_search(dens_ref,ids):
         If=torch.fft.fft(p.images_fourier[g_].to(Tf.dtype),dim=-1); cw=(wr[None,:]*crs[i:j])[:,:,None].to(Tf.dtype)
         cc=torch.fft.ifft(torch.einsum('vrk,brk->bvk',Tf,If*cw),dim=-1).real
         cc=cc/(Tn[i:j,:,None]*Ins[i:j,None,None])
-        m,gi=cc.max(-1); bc[i:j]=m.to(bc.dtype); bg[i:j]=-(gi.to(bg.dtype))*(2*np.pi/P)
+        m,gi=cc.max(-1); bg[i:j]=-(gi.to(bg.dtype))*(2*np.pi/P)
+        if GAMMA_MARG:
+            b=bet[i:j][:,None,None].to(cc.dtype)
+            lse=torch.logsumexp(b*cc**2,dim=-1)-np.log(P)      # marginal over gamma, per view
+            bc[i:j]=torch.sqrt((lse/bet[i:j][:,None].to(cc.dtype)).clamp(min=0)).to(bc.dtype)
+        else:
+            bc[i:j]=m.to(bc.dtype)
         del cc,If,cw
     _mem("after search loop")
     del Tf,Tpow,Tn; torch.cuda.empty_cache()   # 3.1 GB, not needed past the search
     # the neighbourhood gather is (n, chunk, width) and width is ~55 views at D=96,
     # so the chunk has to be small or this is the peak of the whole run
-    nbmax=torch.empty_like(bc)
-    GC=max(64,int(2e8//(n*max(1,NB.shape[1])*4)))
-    for i in range(0,V,GC):
-        j=min(i+GC,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
-    bc.masked_fill_(~(bc>=nbmax-1e-12),-2.0)   # in place: bc is not needed afterwards
-    del nbmax
+    if PEAKS:
+        nbmax=torch.empty_like(bc)
+        GC=max(64,int(2e8//(n*max(1,NB.shape[1])*4)))
+        for i in range(0,V,GC):
+            j=min(i+GC,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
+        bc_sel=bc.masked_fill(~(bc>=nbmax-1e-12),-2.0)
+        del nbmax
+    else:
+        bc_sel=bc
     _mem("after neighbourhood")
-    tcc,tidx=bc.topk(MODES,dim=1)
+    tcc,tidx=bc_sel.topk(MODES,dim=1)
     lg=(beta[ids][:,None]*(tcc**2-tcc[:,:1]**2)).masked_fill(tcc<-1.0,-1e30)
-    return tidx,torch.softmax(lg,dim=1),bg
+    wt=torch.softmax(lg,dim=1)
+    if not _MASS_DONE[0]:
+        _MASS_DONE[0]=True
+        # what fraction of the FULL-grid posterior does the shortlist actually hold?
+        mx=(bc**2).max(dim=1,keepdim=True).values; b=beta[ids][:,None].to(bc.dtype)
+        tot=torch.zeros(n,dtype=torch.float64,device=bc.device)
+        for i in range(0,V,2048):
+            j=min(i+2048,V); tot+=torch.exp(b*(bc[:,i:j]**2-mx)).sum(1).double()
+        top=torch.exp(b*(tcc.to(bc.dtype)**2-mx)).sum(1).double()
+        ne=(-(wt.clamp(min=1e-30)*wt.clamp(min=1e-30).log()).sum(1)).exp()
+        print(f"      [posterior] MODES={MODES} PEAKS={int(PEAKS)} GAMMA_MARG={int(GAMMA_MARG)}: "
+              f"captured mass {(top/tot.clamp(min=1e-30)).median().item():.3f}   "
+              f"n_eff {ne.median().item():.2f}",flush=True)
+    return tidx,wt,bg
 
 F0=Ftrue.clone(); F0[RR>R_INIT]=0; dens0=to_real(F0)
 print(f"PHYSICAL noise, real-space SNR {SNR} | {NP} particles, halves of {NP//2}"

@@ -1,0 +1,19 @@
+D=96  30522 views @ 1.19 deg  tol 1.49 deg  2000 particles  median SNR 0.1
+
+=== SNR spread 1.0x  (10-90 percentile 0.100-0.100)
+  evidence gap, nats, by percentile:  p10=24.8  p25=36.0  p50=49.2  p75=61.7  p90=74.9
+  below   1.0 nats:   0.2% of particles   n_eff 1.97   top-1   0.0%
+  below   3.0 nats:   0.4% of particles   n_eff 1.81   top-1  12.5%
+  below  10.0 nats:   1.9% of particles   n_eff 1.01   top-1  34.2%
+  corr(log SNR, log gap) = +0.000  -> orientation matters as much as SNR
+
+=== SNR spread 3.0x  (10-90 percentile 0.057-0.175)
+  evidence gap, nats, by percentile:  p10=15.7  p25=28.8  p50=49.1  p75=76.2  p90=108.3
+  below   1.0 nats:   0.8% of particles   n_eff 2.55   top-1   6.2%
+  below   3.0 nats:   1.9% of particles   n_eff 2.28   top-1  15.8%
+  below  10.0 nats:   5.8% of particles   n_eff 1.06   top-1  20.7%
+  corr(log SNR, log gap) = +0.731  -> SNR spread drives the tail
+
+An adaptive rule (marginalise the low-gap particles, argmax the rest) can only
+matter in proportion to the fraction below a few nats. Compare that fraction with
+the +1-4% margin measured where the whole stack is in that regime.

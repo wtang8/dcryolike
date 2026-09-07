@@ -98,9 +98,22 @@ class Bank:
             del Tb; t0 = duty_sleep(t0)
         self.V, self.P, self.cdt, self.rdt = V, P, cdt, rdt
 
-    def search(self, images, cr, wr, In, batch=None):
+    def search(self, images, cr, wr, In, batch=None, beta=None):
         """images (n,S,P), cr (n,S) isotropic CTF, wr (S,) shell weights, In (n,) image norms.
-        Returns best cc (n,V) and the in-plane angle (n,V) of the best gamma."""
+
+        Returns (score, gamma) per view, (n,V) each.
+
+        With ``beta`` given, the score of a view is its MARGINAL over the in-plane
+        angle: log sum_gamma exp(beta cc^2(gamma)), expressed back as an effective
+        cc^2 by dividing by beta, so downstream code that squares and multiplies by
+        beta recovers the log-marginal. Without it, the score is the maximum over
+        gamma, which is what the original pose search used.
+
+        The distinction matters because a view's posterior weight is an INTEGRAL over
+        its in-plane angle, not its best value; two views with equal peaks but
+        different in-plane sharpness are not equally probable. CryoLike's integrated
+        likelihood kernel does this logsumexp; this search did not until now.
+        """
         n = images.shape[0]; V, P = self.V, self.P
         if batch is None:   # keep the (b,V,P) correlation block near 1 GB
             batch = max(1, int(1e9 // (V * P * (8 if self.cdt == torch.complex64 else 16))))
@@ -109,12 +122,20 @@ class Bank:
         t0 = _time.monotonic()
         bc = torch.empty(n, V, device=images.device, dtype=self.rdt)
         bg = torch.empty(n, V, device=images.device, dtype=self.rdt)   # (n,V): 2 GB in float64 at n=8000, V=30522
+        bet = None if beta is None else beta.to(self.rdt)
         for i in range(0, n, batch):
             j = min(i + batch, n)
             If = torch.fft.fft(images[i:j].to(self.cdt), dim=-1); cw = (wr[None, :] * cr[i:j])[:, :, None].to(self.cdt)
             cc = torch.fft.ifft(torch.einsum('vrk,brk->bvk', self.Tf, If * cw), dim=-1).real
             cc = cc / (Tn[i:j, :, None] * In[i:j, None, None])
-            m, gi = cc.max(-1); bc[i:j] = m; bg[i:j] = -(gi.to(self.rdt)) * (2 * np.pi / P)
+            m, gi = cc.max(-1)
+            bg[i:j] = -(gi.to(self.rdt)) * (2 * np.pi / P)
+            if bet is None:
+                bc[i:j] = m
+            else:
+                b = bet[i:j][:, None, None]
+                lse = torch.logsumexp(b * cc ** 2, dim=-1) - np.log(P)   # mean over gamma
+                bc[i:j] = torch.sqrt((lse / bet[i:j][:, None]).clamp(min=0))
             del cc, If; t0 = duty_sleep(t0)
         return bc, bg
 
@@ -141,20 +162,56 @@ def neighbourhood(caz, cpo, deg, chunk=4096):
     return idx, nd
 
 
-def select_modes(bc, NB, modes, beta, vchunk=2048):
-    """Local maxima of cc over the view sphere (within the neighbour index NB),
-    top `modes` of them, softmax weights exp(beta (cc^2 - cc_best^2)).
-    Returns indices (n,modes), weights (n,modes), cc (n,modes)."""
+def select_modes(bc, NB, modes, beta, vchunk=2048, peaks=True):
+    """Candidate views and their posterior weights.
+
+    peaks=True (the original): keep local maxima of cc within the neighbour index NB,
+      take the best `modes` of them, and weight by softmax(beta (cc^2 - cc_best^2)).
+      Each retained view stands for a whole basin but is weighted by its PEAK, so a
+      broad basin and a sharp one with the same summit get the same weight. That is a
+      Laplace approximation with the curvature term dropped.
+
+    peaks=False: keep the `modes` highest-weight views outright, with no local-maximum
+      filter, so neighbours of the winner are retained and the basin's width enters the
+      weights directly. With `modes` large enough to cover the posterior mass this is
+      the proper marginal over the view grid rather than an approximation to it.
+
+    Returns indices (n,modes), weights (n,modes), cc (n,modes).
+    """
     n, V = bc.shape
-    nbmax = torch.empty_like(bc)
-    for i in range(0, V, vchunk):                     # (n, vchunk, width) gathers
-        j = min(i + vchunk, V)
-        nbmax[:, i:j] = bc[:, NB[i:j]].max(-1).values
-    masked = bc.masked_fill(~(bc >= nbmax - 1e-12), -2.0)
-    tcc, tidx = masked.topk(modes, dim=1)
+    if peaks:
+        nbmax = torch.empty_like(bc)
+        for i in range(0, V, vchunk):                 # (n, vchunk, width) gathers
+            j = min(i + vchunk, V)
+            nbmax[:, i:j] = bc[:, NB[i:j]].max(-1).values
+        cand = bc.masked_fill(~(bc >= nbmax - 1e-12), -2.0)
+        del nbmax
+    else:
+        cand = bc
+    tcc, tidx = cand.topk(modes, dim=1)
     tcc = tcc.to(beta.dtype)
     lg = (beta[:, None] * (tcc ** 2 - tcc[:, :1] ** 2)).masked_fill(tcc < -1.0, -1e30)
     return tidx, torch.softmax(lg, dim=1), tcc
+
+
+def posterior_mass(bc, beta, modes, chunk=2048):
+    """Fraction of the full-grid posterior captured by the top `modes` views.
+
+    The weights above are normalised over the retained candidates, so they say nothing
+    about what was discarded. This computes the exact denominator over all V views and
+    reports how much of it the shortlist holds; a value near 1 means truncation is
+    harmless, well below 1 means the mixture is missing posterior mass.
+    """
+    n, V = bc.shape
+    b = beta.to(bc.dtype)[:, None]
+    mx = (bc ** 2).max(dim=1, keepdim=True).values
+    tot = torch.zeros(n, dtype=torch.float64, device=bc.device)
+    for i in range(0, V, chunk):
+        j = min(i + chunk, V)
+        tot += torch.exp(b * (bc[:, i:j] ** 2 - mx)).sum(1).double()
+    tcc, _ = bc.topk(modes, dim=1)
+    top = torch.exp(b * (tcc.to(bc.dtype) ** 2 - mx)).sum(1).double()
+    return (top / tot.clamp(min=1e-30))
 
 
 # ---- gridding correction -----------------------------------------------------------
