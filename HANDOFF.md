@@ -176,6 +176,120 @@ disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
 
 ## 1. Current State
 
+**2026-09-07, 15:30. The project's central positive claim has been characterised and
+is regime-limited.** Everything committed and pushed; harness green; nothing running.
+
+### The result
+
+The mixture-vs-argmax margin (posterior-weighted insertion over a pose shortlist,
+reported at +1-4% mean FSC across five protocols) is **an artefact of small box size**.
+Measured at D=96, gold standard, raw reference, SNR 0.3, 8000 particles
+(`results/mixture_D96_snr03_gold.txt`):
+
+| iteration | D=48 (published) | D=96 (measured) |
+|-----------|------------------|-----------------|
+| 1         | +1.0 to +2.0%    | **+0.06%**      |
+| 2         | "                | **+0.10%**      |
+| 3         | "                | **+0.08%**      |
+
+Fifteen to twenty times smaller, and the resolutions are identical to the shell
+(25 px vs truth, 23 px half-map, both branches).
+
+### Why: the anatomy of the pose posterior
+
+`tests/pose_posterior_anatomy.py` (`results/pose_posterior_anatomy.txt`) replaces the
+old habit of grid-searching (D, SNR), which was wrong because those are not independent
+knobs. The posterior temperature beta = ||y||^2_w/(2 sigma^2 C) converges to D^2/2 -- the
+PIXEL COUNT -- almost independently of SNR. What SNR moves is the EVIDENCE GAP between
+competing poses. One scalar, spanning three orders of magnitude:
+
+| D  | SNR  | beta | gap (nats) | basins | within-basin views | spread | tolerance |
+|----|------|------|-----------|--------|--------------------|--------|-----------|
+| 48 | 0.30 | 1432 |   3.1     | 1.40   | 606                | 0.95   | 2.98      |
+| 48 | 0.10 | 1242 |   0.9     | 5.19   | 764                | 0.97   | 2.98      |
+| 48 | 0.05 | 1198 |   0.5     | 7.27   | 809                | 0.97   | 2.98      |
+| 64 | 0.30 | 2495 |  26.2     | 1.00   | 381                | 0.91   | 2.24      |
+| 64 | 0.10 | 2196 |   2.4     | 1.69   | 569                | 0.96   | 2.24      |
+| 96 | 0.30 | 5236 | 189.5     | 1.00   |  50                | 0.38   | 1.49      |
+| 96 | 0.10 | 4830 |  47.5     | 1.00   | 152                | 0.65   | 1.49      |
+| 96 | 0.05 | 4721 |  15.1     | 1.00   | 256                | 0.83   | 1.49      |
+
+**BETWEEN-basin structure vanishes with box size**: 7.27 competing basins at D=48/0.05,
+exactly 1.00 at D=96 at every SNR tested. A shortlist mixture captures exactly this, so
+its advantage disappears.
+
+**WITHIN-basin width does NOT vanish** -- 50 to 800 effective directions inside the
+winning basin everywhere -- but it stays a roughly CONSTANT FRACTION of the success
+tolerance (0.26-0.56 at D=96, 0.32 at D=48), because both scale as 1/k_max. So the pose
+is determined to the same fraction of a resolution element at every box size, and finer
+local marginalisation would buy the same small amount everywhere. It is not a recoverable
+advantage.
+
+### Two of my own errors, corrected
+
+1. I first reported "n_eff = 1.00 at D=96, nothing to average". That statistic counted
+   only local maxima >= NEIGH degrees apart, collapsing each basin to one mode. It meant
+   ONE BASIN, not a determined pose. The dense-scan columns above are what it missed.
+2. I claimed a "shared-latent E-step" was the missing piece for the heterogeneous work.
+   It was not: `pipeline.reconstruct` already inserts per-mode CONDITIONAL moments
+   weighted by mode probability, which IS exact EM for the joint (pose, latent) posterior.
+
+### Heterogeneous results (all stand)
+
+Gate: motion does not disturb the shortlist (recall@100 flat at 100/100/96.5% for swings
+of 0, +-10, +-30 deg). E-step verified in isolation (rho 0.85 at the true pose, SNR 0.1,
+D=96). Linear model recovers a hinge from a random start; at D=96, SNR 0.3, single
+precision, independent halves: 8,000 particles -> rho 0.889, component 14 px, margin
++0.0042; 16,000 -> rho 0.893, component 16 px, margin +0.0047. Particle count limits the
+component's resolution; it buys no extra margin.
+
+### Infrastructure
+
+Single precision by default (`DTYPE=double` restores the old path, bit-identical);
+`generate_physical` and `generate_physical_hetero` both chunked and built in place
+(`keep_clean=False` carries the weighted noise norm instead of the noiseless stack);
+`iterative_halfset_physical.py` runs at D=96 (chunked bank, neighbour index, freed
+before the neighbourhood stage) and still reproduces the D=48 margin bit-identically;
+`test_hetero_scale.py` in the harness pins the reconstruction-scale fix and shows the
+GAUGE PIN, not the gridding correction, is load-bearing. 15 suites green.
+
+## 2. Working Hypotheses & Roadblocks
+
+- **The controlling parameter is the evidence gap in nats, not (D, SNR).** Any future
+  claim about marginalisation should be plotted against it. beta itself is nearly
+  D^2/2 and carries no independent information.
+- **Marginalising the pose helps only where competing basins are tied**, i.e. gap of
+  order a few nats or less. That is D<=64 at SNR<=0.1 for this phantom. Real particle
+  boxes are larger, so the honest headline is: this is a real effect with a
+  characterised and narrow domain of validity, not a general improvement.
+- **What has NOT been tested and could still change the picture:** real particles have
+  a DISTRIBUTION of evidence gaps within one dataset (defocus, ice thickness, particle
+  mass all vary). If a usable fraction of particles sits in the low-gap regime, a
+  per-particle adaptive rule -- marginalise when the gap is small, argmax otherwise --
+  would capture the benefit where it exists at no cost elsewhere. That is the one
+  remaining route to a general claim and it is cheap to test.
+- The heterogeneous model is a verified reimplementation of a 3DVA-class method with an
+  unusually strong validation harness. Its distinctive element (averaging the latent over
+  the pose posterior) inherits the same domain limit as the homogeneous claim.
+
+## 3. Exact Next Action
+
+**Measure the distribution of the evidence gap, not its median.** Every number above is a
+median over particles at a fixed nominal SNR. Real datasets vary per particle. Generate a
+stack with realistic per-particle variation (defocus 0.5-2.5 um already varies; add
+per-particle SNR spread of the kind ice-thickness produces, say a factor of 3 either way)
+at D=96, and report the histogram of the evidence gap and the fraction of particles below
+~3 nats, the threshold where the anatomy table shows basins genuinely compete.
+
+Prediction to write before running: at D=96 with a 3x SNR spread, fewer than 10% of
+particles fall below 3 nats, and the aggregate margin from an adaptive rule is under 0.5%.
+
+Decision: if the low-gap fraction is small, the project's honest conclusion is written and
+the work is a characterisation of when pose marginalisation helps, which is publishable as
+such. If it is large (>25%), the adaptive rule is worth building and is the general claim.
+
+\n---\n\n### Superseded, kept for the record\n\n
+
 **2026-09-07, 04:30. A measurement made tonight changes what this project can claim.**
 Everything is committed and pushed; harness green (14 suites); nothing running.
 
@@ -258,113 +372,4 @@ and still reproduces the D=48 margin (+1.0% at iteration 2, SNR 0.05).
   to average.
 - Untested and now lower priority: K=2 (hinge nonlinearity), SNR 0.1 at 16,000 particles,
   CryoLike's fully integrated likelihood (offset + noise scale) for real data.
-
-## 3. Exact Next Action
-
-**Read jobq jobs 21 and 22** (`jobq logs 21`), the mixture-vs-argmax comparison at D=96,
-SNR 0.3 and 0.1, gold standard, raw reference, 8,000 particles, 6 iterations. Both carry
-their prediction and decision rule in the script header
-(`scratchpad/job_mixture_d96_snr{03,01}.sh`).
-
-**Prediction (written before the run):** the mean-FSC margin of mixture over argmax is
-below +0.3% at both SNRs, against +1.0-2.0% (SNR 0.3) and +1.9-2.6% (SNR 0.1) at D=48.
-
-**Decision:**
-- Margin < 0.3% -> the marginalisation claim is box-size dependent and does not survive
-  at realistic size. Write up the negative result. The measurement in
-  `hetero_mode_spread.py` is the explanation and belongs in it.
-- Margin >= 1% -> the mechanism is not the posterior spread; stop and re-derive before
-  building further.
-
-Then, either way, update the two artifacts: "The Recall Ceiling"
-(https://claude.ai/code/artifact/5eb5c62a-4a61-4e50-96b8-0526f66e6632) presents the
-mixture margin without the box-size caveat, and "The Hinge Pilots"
-(https://claude.ai/code/artifact/ce5006d1-b716-49f7-b534-b9095372b35d) presents the
-shortlist-averaging design as the distinctive contribution.
-
-
----
-
-### Superseded, kept for the record
-
-
-
-**2026-09-06 (early morning). Heterogeneous reconstruction: gate passed, pilots run, one component
-of a real hinge motion recovered from a random start at D=96.** Everything is committed and pushed
-(`main`); logs are under `dcryolike/results/hetero_*`. The machine was shut down at the end of the
-session on the user's instruction.
-
-Chain of results, in order (all physical noise, gold-standard halves where iterative):
-
-| step | setting | result |
-|---|---|---|
-| gate zero | D=96, consensus bank, arm swing 0/±10/±30° | recall@100 flat: 100/100/96.5% at SNR 0.3/0.1/0.05 for every swing. Heterogeneity enters AFTER the shortlist. |
-| E-step isolation | true pose + true component | rho(z,t) 0.85 (SNR 0.1), 0.92 (0.3) at D=96, matching the LS bound; at D=32 only 0.13 (box too small). E-step verified. |
-| classes, D=48, SNR 0.1, ±15° | consensus / random / truth start | 51% / 51% / 58%: per-particle class evidence ~0.4 nats; maps drift back to consensus. Machinery classifies at SNR 0.3 ±30° from truth (84%). |
-| linear, D=48 | K=1 any variant | rho ≤ 0.02: D=48 SNR 0.1 has 1.5% top-1 pose recall, nothing per-particle can work. |
-| linear, D=96, SNR 0.3, unfiltered | 10 iters | rho 0.11→0.82, but amplitude 0.75 vs true 0.16 (PPCA noise inflation); V(z) worse than V0. |
-| linear, D=96, band-limited k≤24 | 4 iters | rho 0.11→0.53, faster (noise dimensionality cut 8×). |
-| linear, D=96, SNR 0.1, band-limited + half-set FSC shrinkage | 10 iters | rho 0.78, R² 0.59, shrunk amplitude 0.164 (true ≈0.16). V(z)=V0 at the 0.5 crossing (component resolved only to ~10 px). |
-| linear, D=96, SNR 0.3, band-limited + shrinkage | 10 iters | rho 0.89, R² 0.80 by iter 4; **V(z) beats V0 in mean FSC at iters 2–5 (peak 0.4872 vs 0.4835)**, then the amplitude bias (shrunk 0.06→0.12, rising) overtakes and V(z) falls below V0 from iter 7. |
-| **noise refit** (driver 9, `TAU_MODE=residual`) | 4 iters, stopped | identical to driver 8 to 3 decimals; fitted tau/tau0 = 1.000. Not the cause. |
-| **pose from V0-only CC** (driver 10, `POSE_FROM=v0`) | 10 iters | identical trajectory to driver 8 (V(z) below V0 from iter 7, final 0.4741 vs 0.4842). Not the cause. |
-| **M-step isolation** (`hetero_mstep_check.py`, true poses, exact latents) | — | U comes back at 0.75 of the true amplitude, V0 at 0.82 (gridding attenuation, both); noise-correlated latents do NOT inflate (0.758). The E-M loop at the TRUE pose does not inflate either (product of U scale and z slope stays 0.6–0.7 over 6 rounds). The inflation needs the pose search. |
-| **MODES=1** (driver 11) | 8 iters | identical to driver 10 (weights were near one-hot at SNR 0.3). Not the cause. |
-| **oracle poses** (driver 12, `POSE_FROM=oracle`) | 8 iters | same decline from a higher baseline (V0 26 px vs 24). Not the cause. |
-| **split random starts** (driver 13, `INIT_SPLIT=1`) | 8 iters | identical to driver 12. Not the cause. |
-| **K=2** (driver 14) | 8 iters | same decline. |
-| **FOUND (state dumps, `SAVE=`)** | — | **V0's norm falls 77 → 58 → 38 over iterations 3–8 while U's norm stays 4.1–4.3 and its per-shell content is stationary.** FSC is scale-invariant so V0's scores never showed it. Mechanism: the trilinear splat + per-voxel normalisation returns volumes attenuated (0.82 for V0, 0.75 for U); the flat-prior gain absorbs the attenuation each E-step, so nothing pins V0's scale, while the unit z prior pins U's. The U/V0 ratio drifts, V(z̄_c) over-represents the motion at the extremes, maps degrade. There never was an "amplitude bias" in the component. |
-| **gridding correction** (`pipeline.gridding_correction`, per-shell, measured once from noiseless slices of the consensus at the run's poses) | isolation check | V0 scale 0.82 → 0.99, U 0.75 → 0.92; true-pose E-M loop product 0.66 → 0.81. Driver 15 (grid poses, MODES=10, K=1, GRID_CORR=1) is the confirmation run. |
-
-New/changed code this session: `hetero.py` (Gram-over-γ, closed-form gain+z marginal, per-voxel
-M-step, PCA gauge, leakage), `pipeline.py` (Bank with complex64 option, memory-safe neighbour index
-for 30k views, `duty_sleep` **GPU duty cycle default 0.8**), generator (`hinge_phantom`,
-`generate_physical_hetero` chunked; DFT matrix chunked), `tests/test_hetero.py` (17 checks, in the
-harness), `tests/hetero_estep_check.py`, `tests/hetero_gate0.py`, `tests/hetero_classes_pilot.py`
-(INIT=consensus|random|truth), `tests/hetero_linear_pilot.py` (K, U_KMAX, U_SHRINK, U_INIT, D,
-VIEW_DEG, mean-FSC columns).
-
-Operational: the WSL crashes on 4 Sep were host-RAM OOM from the user's own multi-worker job, not
-dcryolike. Run heavy scripts in `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0`
-(5 GB once gave a CUDA "unknown error" at D=96). D=96 generation peaked >13 GB GPU before the
-chunking fix; ~9 GB after. Pausing a torch process from outside (SIGSTOP) does NOT cap GPU use —
-kernels are queued seconds ahead — hence the in-process duty cycle. Never `pgrep -f`/`pkill -f` a
-pattern from a shell whose own command line contains it (it kills the shell; use
-`scratchpad/stop_run.sh`-style helper scripts).
-
-## 2. Working Hypotheses & Roadblocks
-
-- **The plan's premise holds.** Motion does not touch the shortlist at D=96 (gate), so pose
-  proposal + marginalisation extends to heterogeneity unchanged. Verified, not assumed.
-- **Per-particle decisions are information-limited; population models are not.** Classification
-  fails at SNR 0.1 for a ±15° swing (0.4 nats/particle) while the linear model pools 4,000 weak
-  signals and recovers the component (rho 0.78–0.89). This is the 3DVA-vs-classification story,
-  reproduced with exact likelihoods.
-- **Detection threshold.** With N particles per half and p Fourier coordinates, the motion's
-  covariance eigenvalue competes with the noise bulk edge σ²(1+√(p/n_eff))²; at 8,000 particles the
-  ratio is ~1 unfiltered and ~4 band-limited to k≤24. Band-limiting the component is the cheap
-  lever; more particles is the honest one (ratio ∝ N).
-- **RESOLVED (6 Sep, late): the "amplitude bias" was V0's scale drifting down under the gridding
-  attenuation** (see table). Fix in place: `GRID_CORR=1` (default) in the pilot. Everything below
-  this bullet in the original text is the falsified hunt, kept for the record.
-- **(historical) Amplitude bias is the open problem, and it is now localised to the pose search.** Three
-  hypotheses were tested and falsified on 6 Sep: the noise level (refit from the residual: no
-  change), the pose selection by the K-component marginal (pose from V0-only CC: no change), and
-  the M-step (isolation check with true poses: unbiased; the full E-M loop at the true pose does
-  not inflate). What the real pilot has that the isolated loop does not: (i) a 10-mode shortlist
-  mixture in which 9 modes are wrong poses whose fitted z is a noise fit that is nevertheless
-  inserted along U with its posterior weight, and (ii) grid poses 1.19° off the truth. (i) is the
-  prime suspect: at a wrong pose z = <y,T_U>/|T_U|^2 is a self-consistent noise projection, so
-  inserting z·y there always adds energy along U. The pending run (driver 11, `MODES=1`) tests
-  it. If MODES=1 removes the inflation, the fix is to insert the component from the top mode only
-  (or to marginalise z properly over modes with a shared z rather than a per-mode z); if it does
-  not, (ii) is next, testable by an oracle-pose pilot run.
-  Diagnostics now printed per iteration: fitted tau/tau0, z-consistency (var E[z] + E var), raw
-  U scale against the true PC at k<=14, slope of E[z] on the true latent, and their product
-  (1 = the true family amplitude; the isolated loop gives ~0.65 because of the 0.75 gridding
-  attenuation).
-- **The FSC 0.5 crossing is blind to the component** (resolved only to 10–14 px while the crossing
-  sits at 21–25 px). Judge V(z) by mean FSC or by a masked real-space CC on the arm.
-- Symmetry-breaking for discrete classes (random split) does not work at 4,000 particles per
-  half even at SNR 0.3; not central to the plan, parked.
 
