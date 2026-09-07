@@ -228,16 +228,16 @@ def generate(volume, polar_grid, n_particles, snr, box_size=None, seed=0,
 # in generate() is not, and reads much easier than it is.
 # ---------------------------------------------------------------------------
 
-def _polar_dft_matrix(polar_grid, D, device, dtype=torch.complex128, rows=2048):
+def _polar_dft_matrix(polar_grid, D, device, dtype=torch.complex128, rows=2048, real_dtype=torch.float64):
     """Exact DFT from a D x D real-space image to the polar Fourier points.
 
     Built in row chunks: the one-shot version holds three (n_points x D^2)
     float64/complex128 temporaries, ~5.5 GB at D=96 with 12.5k polar points.
     Element-wise arithmetic is identical, so the matrix is bit-for-bit the same.
     """
-    kx = torch.tensor(polar_grid.x_points, dtype=torch.float64, device=device)
-    ky = torch.tensor(polar_grid.y_points, dtype=torch.float64, device=device)
-    ax = torch.arange(D, dtype=torch.float64, device=device) - D // 2
+    kx = torch.tensor(polar_grid.x_points, dtype=real_dtype, device=device)
+    ky = torch.tensor(polar_grid.y_points, dtype=real_dtype, device=device)
+    ax = torch.arange(D, dtype=real_dtype, device=device) - D // 2
     X, Y = torch.meshgrid(ax, ax, indexing="ij")
     Xf, Yf = X.reshape(1, -1), Y.reshape(1, -1)
     M = torch.empty(kx.shape[0], D * D, dtype=dtype, device=device)
@@ -356,16 +356,20 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     S, P = polar_grid.n_shells, polar_grid.n_inplanes
     if str(device).startswith("cuda") and torch.cuda.is_available():
         # persistent: images (complex) + ctf + proj + nreal + the polar DFT matrix
-        need = (n_particles * S * P * 24 + 2 * n_particles * D * D * 8
-                + S * P * D * D * 16) / 1e9
+        el = 8 if dtype == torch.float64 else 4          # bytes per real element
+        # persistent: images (2 el) + ctf (1 el) + proj + nreal + the polar DFT matrix (2 el).
+        # NOTE this counts the GENERATOR only; a caller that then builds a template bank
+        # (30522 views x S x P complex64 = 3.1 GB at D=96) must leave room for it as well.
+        need = (n_particles * S * P * 3 * el + 2 * n_particles * D * D * el
+                + S * P * D * D * 2 * el) / 1e9
         free = torch.cuda.mem_get_info()[0] / 1e9
         print(f"[generate_physical_hetero] n={n_particles} D={D} grid {S}x{P}: "
               f"needs ~{need:.1f} GB persistent, {free:.1f} GB free on the device", flush=True)
-        if need > 0.75 * free:
+        if need > 0.55 * free:      # the caller's bank and per-chunk temporaries need the rest
             raise RuntimeError(
                 f"not enough GPU memory: ~{need:.1f} GB of persistent arrays against "
                 f"{free:.1f} GB free (the run also needs room for per-chunk temporaries). "
-                f"Reduce n_particles to about {int(n_particles * 0.75 * free / need)}, "
+                f"Reduce n_particles to about {int(n_particles * 0.55 * free / need)}, "
                 f"or free the device.")
     azimus, polars, gammas = uniform_so3(n_particles, seed, device, dtype)
     thetas = torch.tensor(polar_grid.theta_shell, dtype=dtype, device=device)
@@ -404,7 +408,8 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     gen = torch.Generator(device=device).manual_seed(seed + 99991)
     nreal = torch.randn(n_particles, D * D, generator=gen, dtype=dtype, device=device)
     nreal = nreal * noise_std[:, None]
-    M = _polar_dft_matrix(polar_grid, D, device)
+    cdt = torch.complex128 if dtype == torch.float64 else torch.complex64
+    M = _polar_dft_matrix(polar_grid, D, device, dtype=cdt, real_dtype=dtype)
     wq = torch.tensor(polar_grid.integration_weight_points, dtype=dtype,
                       device=device).reshape(S, P)
     noise_norm_w = torch.empty(n_particles, dtype=dtype, device=device)
@@ -415,8 +420,8 @@ def generate_physical_hetero(volumes, t_values, conf, polar_grid, snr_real, box_
     # noiseless stack need not be retained.
     for i in range(0, n_particles, chunk):
         j = min(i + chunk, n_particles)
-        npol = (nreal[i:j].to(torch.complex128) @ M.T).reshape(j - i, S, P).to(clean.dtype)
-        ref = (M @ proj[i:j].reshape(j - i, -1).to(torch.complex128).T).T.reshape_as(npol)
+        npol = (nreal[i:j].to(cdt) @ M.T).reshape(j - i, S, P).to(clean.dtype)
+        ref = (M @ proj[i:j].reshape(j - i, -1).to(cdt).T).T.reshape_as(npol)
         scale = torch.sqrt(tmpl_pow[i:j] / (ref.abs() ** 2).sum(dim=(1, 2)))
         npol *= scale[:, None, None]
         noise_norm_w[i:j] = (npol.abs() ** 2 * wq).sum(dim=(1, 2))

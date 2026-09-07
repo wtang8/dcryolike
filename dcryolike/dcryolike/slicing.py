@@ -111,7 +111,9 @@ def slice_gridding(
     # so xyz must be reversed to map x->axis 0, y->axis 1, z->axis 2.
     g = torch.flip(g, dims=(-1,))
     n_t, n_p, _ = points.shape
-    grid = g.reshape(1, n_t, n_p, 1, 3)
+    # grid_sample requires the sample grid and the volume to share a dtype; the
+    # points are carried in whatever precision the caller uses, the volume in its own
+    grid = g.reshape(1, n_t, n_p, 1, 3).to(vol.dtype)
 
     out = F.grid_sample(
         vol, grid, mode="bilinear", padding_mode="zeros", align_corners=True

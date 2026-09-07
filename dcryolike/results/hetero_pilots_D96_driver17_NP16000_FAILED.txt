@@ -1,0 +1,13 @@
+##### D96 K1 SNR0.3 NP=16000 grid poses MODES=10 GRID_CORR=1 GAUGE_G=1 ITERS=8  (01:07:04)
+[generate_physical_hetero] n=16000 D=96 grid 49x256: needs ~9.0 GB persistent, 14.1 GB free on the device
+LINEAR LATENT | GPU duty 0.8 | U_SHRINK=1 TAU=residual POSE=v0 INIT_SPLIT=1 GRID_CORR=1 GAUGE_G=1 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 16000 particles, GOLD halves | U_init=random | C=0.7853 beta median 5316.1
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+      half 0: gridding attenuation a(k) at k=[4, 12, 24]: 0.809 0.814 0.802
+      half 1: gridding attenuation a(k) at k=[4, 12, 24]: 0.809 0.814 0.802
+    1  0.099  0.010  0.001    26.0p  26.0p  25.0p  meanFSC V0 0.5077 V(z) 0.5077   |U|/|V0| 0.154  z std 0.434  U halfFSC0.5 1p |U|shr 0.008  |V0| 107.0  gbar 1.004  tau/tau0 0.976  z-consistency 0.37  rawU/Utrue(k<=14) -0.019  dE[z]/dz_true -0.008  product 0.000
+terminate called after throwing an instance of 'thrust::THRUST_300002_SM_500_520_530_600_610_620_700_720_750_800_860_870_890_900_NS::system::system_error'
+  what():  device free failed: cudaErrorMemoryAllocation: out of memory
+/tmp/claude-1000/-home-wtang-cryoem/797c1725-8c2a-4848-84a7-29e41be17284/scratchpad/run_pilots17.sh: line 4: 56788 Aborted                 (core dumped) "$@" 2>&1
+##### rc=134
+##### ALL DONE

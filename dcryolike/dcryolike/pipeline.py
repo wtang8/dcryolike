@@ -108,13 +108,13 @@ class Bank:
         Tn = torch.sqrt(torch.einsum('vr,br->bv', self.Tpow, wr[None, :] * cr ** 2))
         t0 = _time.monotonic()
         bc = torch.empty(n, V, device=images.device, dtype=self.rdt)
-        bg = torch.empty(n, V, device=images.device, dtype=torch.float64)
+        bg = torch.empty(n, V, device=images.device, dtype=self.rdt)   # (n,V): 2 GB in float64 at n=8000, V=30522
         for i in range(0, n, batch):
             j = min(i + batch, n)
             If = torch.fft.fft(images[i:j].to(self.cdt), dim=-1); cw = (wr[None, :] * cr[i:j])[:, :, None].to(self.cdt)
             cc = torch.fft.ifft(torch.einsum('vrk,brk->bvk', self.Tf, If * cw), dim=-1).real
             cc = cc / (Tn[i:j, :, None] * In[i:j, None, None])
-            m, gi = cc.max(-1); bc[i:j] = m; bg[i:j] = -(gi.to(torch.float64)) * (2 * np.pi / P)
+            m, gi = cc.max(-1); bc[i:j] = m; bg[i:j] = -(gi.to(self.rdt)) * (2 * np.pi / P)
             del cc, If; t0 = duty_sleep(t0)
         return bc, bg
 

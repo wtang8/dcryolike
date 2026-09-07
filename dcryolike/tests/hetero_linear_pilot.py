@@ -41,6 +41,12 @@ from dcryolike.pipeline import (ShellMasks, res_at, to_real, temperature, Bank, 
 import time
 
 dev=os.environ.get("DEV","cuda"); BACKEND=os.environ.get("BACKEND","nufft"); SMOKE=os.environ.get("SMOKE","0")=="1"
+# Single precision by default: this GPU runs FP64 at a fraction of FP32 throughput, and the
+# double-precision image stack alone was 3.2 GB at 16,000 particles / D=96. The reconstruction
+# accumulator stays float64 (it is 28 MB and sums millions of terms). DTYPE=double restores the
+# old behaviour for a like-for-like comparison with earlier runs.
+DT = torch.float64 if os.environ.get("DTYPE","single")=="double" else torch.float32
+CDT = torch.complex128 if DT==torch.float64 else torch.complex64
 D=int(os.environ.get("D","32" if SMOKE else "48")); NP=int(os.environ.get("NP","400" if SMOKE else "8000"))
 MODES=int(os.environ.get("MODES","10")); NEIGH=10.0; ITERS=int(os.environ.get("ITERS","2" if SMOKE else "6")); R_INIT=8
 SNR=float(os.environ.get("SNR","0.1")); K=int(os.environ.get("K","1"))
@@ -75,14 +81,14 @@ TAU_MODE=os.environ.get("TAU_MODE","residual")  # residual: fit the noise precis
 # coupling RELION's SSNR regularisation also has; the maps themselves stay independent.)
 torch.manual_seed(0)
 
-ts=list(np.linspace(-SWING,SWING,NCONF)); vols=[hinge_phantom(D,float(t),device=dev)[0] for t in ts]
+ts=list(np.linspace(-SWING,SWING,NCONF)); vols=[hinge_phantom(D,float(t),device=dev,dtype=DT)[0] for t in ts]
 Ftrue=[fourier_volume(v) for v in vols]
 P=int(os.environ.get("P_INPLANE",str(64 if SMOKE else min(256,int(2**np.ceil(np.log2(2*np.pi*(D//2)*0.85)))))))
 pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=P,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
-th=torch.tensor(pg.theta_shell,dtype=torch.float64,device=dev)
-rr=torch.tensor(pg.radius_shells,dtype=torch.float64,device=dev)
-w=torch.tensor(pg.integration_weight_points,dtype=torch.float64,device=dev).reshape(S,P); wr=w[:,0]
+th=torch.tensor(pg.theta_shell,dtype=DT,device=dev)
+rr=torch.tensor(pg.radius_shells,dtype=DT,device=dev)
+w=torch.tensor(pg.integration_weight_points,dtype=DT,device=dev).reshape(S,P); wr=w[:,0]
 VIEW_DEG=float(os.environ.get("VIEW_DEG", "8.0" if SMOKE else ("4.0" if D<=48 else str(np.degrees(1.0/(D//2))))))
 NEIGH=NEIGH*min(1.0,24.0/(D//2))                     # local-max radius scales with 1/k_max
 va=ViewingAngles.from_viewing_distance(np.radians(VIEW_DEG))
@@ -95,11 +101,11 @@ p=generate_physical_hetero(vols,ts,conf,pg,SNR,seed=17,device=dev,ctf_kwargs=ISO
 if ORACLE:
     # the "view grid" becomes the particles' own true directions: view index == particle index
     cpo=p.polars.clone(); caz=p.azimus.clone(); V=NP
-    G_ORACLE=torch.zeros(NP,NP,dtype=torch.float64,device=dev); G_ORACLE[torch.arange(NP,device=dev),torch.arange(NP,device=dev)]=p.gammas
+    G_ORACLE=torch.zeros(NP,NP,dtype=DT,device=dev); G_ORACLE[torch.arange(NP,device=dev),torch.arange(NP,device=dev)]=p.gammas
 beta,tau,C=temperature(p,w,D); In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2))); cr=p.ctf[:,:,0]
 torch.cuda.empty_cache()   # (the generator already builds the noisy stack in place; clean_fourier is None)
 HALF=[torch.arange(0,NP//2,device=dev),torch.arange(NP//2,NP,device=dev)]
-shells=ShellMasks(D,dev); prior_prec=torch.tensor([0.0]+[1.0]*K,dtype=torch.float64,device=dev)
+shells=ShellMasks(D,dev); prior_prec=torch.tensor([0.0]+[1.0]*K,dtype=DT,device=dev)
 
 def lowpassed(F,k): return to_real(shells.lowpass(F,k,width=1.0))
 cons=torch.stack(vols).mean(0); V0_init=lowpassed(fourier_volume(cons),R_INIT)
@@ -116,11 +122,11 @@ if K>0 and U_INIT=="truth":
 elif K>0:
     def rand_init(seed):
         g=torch.Generator(device=dev).manual_seed(seed)
-        Ui=torch.stack([lowpassed(fourier_volume(torch.randn(D,D,D,generator=g,dtype=torch.float64,device=dev)),R_INIT) for _ in range(K)])
+        Ui=torch.stack([lowpassed(fourier_volume(torch.randn(D,D,D,generator=g,dtype=DT,device=dev)),R_INIT) for _ in range(K)])
         return Ui*(0.1*V0_init.norm()/Ui.reshape(K,-1).norm(dim=1)[:,None,None,None])
     U_init=rand_init(5)
 else:
-    U_init=torch.zeros(0,D,D,D,dtype=torch.float64,device=dev)
+    U_init=torch.zeros(0,D,D,D,dtype=DT,device=dev)
 # INIT_SPLIT=1: each half starts from its OWN random component. With a shared start, the
 # part of the start that survives EM is common to both halves, so the half-set FSC
 # shrinkage keeps it as if it were signal (observed: the shrunk component's norm doubles
@@ -137,9 +143,9 @@ def estep(V0,U,ids,tidx,bg,wt0=None):
     n=len(ids); M=tidx.shape[1]; K1=K+1
     gi0=torch.remainder(torch.round(-torch.gather(bg,1,tidx)/(2*np.pi/P)).long(),P)   # (n,M) V0 gamma index
     vol_list=[V0]+[U[k] for k in range(K)]
-    lse=torch.empty(n,M,dtype=torch.float64,device=dev); Ea=torch.empty(n,M,K1,dtype=torch.float64,device=dev)
-    Eaa=torch.empty(n,M,K1,K1,dtype=torch.float64,device=dev); bg=bg.clone(); t0=time.monotonic()
-    resid=torch.empty(n,M,dtype=torch.float64,device=dev); pvar=torch.empty(n,M,dtype=torch.float64,device=dev)
+    lse=torch.empty(n,M,dtype=DT,device=dev); Ea=torch.empty(n,M,K1,dtype=DT,device=dev)
+    Eaa=torch.empty(n,M,K1,K1,dtype=DT,device=dev); bg=bg.clone(); t0=time.monotonic()
+    resid=torch.empty(n,M,dtype=DT,device=dev); pvar=torch.empty(n,M,dtype=DT,device=dev)
     for i in range(0,n,EB):
         t0=duty_sleep(t0)
         j=min(i+EB,n); nb=j-i; g_=ids[i:j]; v=tidx[i:j].reshape(-1)
@@ -149,7 +155,7 @@ def estep(V0,U,ids,tidx,bg,wt0=None):
         logml,mean,cov=marginal_loglik(A,b,Gyy,tau_cur[g_],prior_prec)   # (nb,M,P)
         lse[i:j]=torch.logsumexp(logml,dim=2)
         gi=logml.argmax(2) if POSE_FROM=="marginal" else gi0[i:j]       # (nb,M)
-        bg[torch.arange(i,j,device=dev)[:,None],tidx[i:j]]=-(gi.double())*(2*np.pi/P)
+        bg[torch.arange(i,j,device=dev)[:,None],tidx[i:j]]=-(gi.to(bg.dtype))*(2*np.pi/P)
         mu=torch.gather(mean,2,gi[...,None,None].expand(nb,M,1,K1)).squeeze(2)
         cv=torch.gather(cov,2,gi[...,None,None,None].expand(nb,M,1,K1,K1)).squeeze(2)
         Ag=torch.gather(A,2,gi[...,None,None,None].expand(nb,M,1,K1,K1)).squeeze(2)
@@ -178,7 +184,7 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
     return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
-print(f"LINEAR LATENT | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} GRID_CORR={int(GRID_CORR)} GAUGE_G={int(GAUGE_G)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | {str(DT).replace('torch.','')} | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} GRID_CORR={int(GRID_CORR)} GAUGE_G={int(GAUGE_G)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
@@ -191,7 +197,7 @@ for it in range(1,ITERS+1):
     for h in (0,1):
         ids=HALF[h]; V0,U=state[h]
         if ORACLE:
-            tidx=ids[:,None]; wt0=torch.ones(len(ids),1,dtype=torch.float64,device=dev); bg=G_ORACLE[ids]
+            tidx=ids[:,None]; wt0=torch.ones(len(ids),1,dtype=DT,device=dev); bg=G_ORACLE[ids]
         else:
             bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
             tidx,wt0,_=select_modes(bc,NB,MODES,beta[ids])
@@ -242,7 +248,7 @@ for it in range(1,ITERS+1):
             zbar=torch.stack([z_mean[conf[ids]==c].mean(0) for c in range(NCONF)])
             unorm=U.reshape(K,-1).norm(dim=1)/V0.norm()
         else:
-            zbar=torch.zeros(NCONF,0,dtype=torch.float64,device=dev)
+            zbar=torch.zeros(NCONF,0,dtype=DT,device=dev)
         a0,az,Fz,f0,fz=family_metrics(V0,U,zbar); m0.append(a0); mz.append(az); Fz_h.append(Fz); mf0.append(f0); mfz.append(fz)
         state[h]=(V0,U); zbars[h]=zbar
     if K>0 and U_SHRINK:

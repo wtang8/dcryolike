@@ -186,10 +186,15 @@ class HeteroAccumulator:
         Ea  (n,K+1)    E[a] per point    Eaa (n,K+1,K+1) E[a a^T] per point
         (per-particle moments are expanded to per-point by the caller)
         """
-        insert_trilinear(pts, (w * c * y)[None] * Ea.T.to(y.dtype), self.D, self.num)
-        insert_trilinear(pts, (w * c ** 2)[None, None] * Eaa.permute(1, 2, 0), self.D, self.den)
+        # the stack may be single precision while the accumulator is double: summing
+        # millions of terms is where precision actually matters, so the values are cast
+        # up here rather than the accumulator being cast down
+        num_v = ((w * c * y)[None] * Ea.T.to(y.dtype)).to(self.num.dtype)
+        den_v = ((w * c ** 2)[None, None] * Eaa.permute(1, 2, 0)).to(self.den.dtype)
+        insert_trilinear(pts.to(self.den.dtype), num_v, self.D, self.num)
+        insert_trilinear(pts.to(self.den.dtype), den_v, self.D, self.den)
 
-    def solve(self, lam=1e-3):
+    def solve(self, lam=1e-3):   # returns the accumulator's dtype (float64 by default)
         """Per-voxel solve, ridge lam x mean diagonal. Returns (K+1, D, D, D) complex."""
         den = self.den.permute(2, 0, 1).clone()                          # (D^3,K+1,K+1)
         diag = torch.diagonal(den, dim1=-2, dim2=-1)
