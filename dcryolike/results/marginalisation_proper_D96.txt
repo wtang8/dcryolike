@@ -1,0 +1,19 @@
+##### A proper marginal (MODES=200, dense, in-plane integrated)
+ iter   --------- argmax ---------    --------- mixture -------- 
+         vsTruth  halfmap   meanFSC    vsTruth  halfmap   meanFSC
+----------------------------------------------------------------------
+      [posterior] MODES=200 PEAKS=0 GAMMA_MARG=1: captured mass 1.000   n_eff 25.47
+    1      22.0p      20p    0.4410      23.0p      21p    0.4591  
+    2      22.0p      20p    0.4410      22.0p      20p    0.4491  
+    3      22.0p      20p    0.4410      22.0p      20p    0.4484  
+##### rc=0
+##### B peak shortlist control (MODES=10, peaks, in-plane maximised)
+ iter   --------- argmax ---------    --------- mixture -------- 
+         vsTruth  halfmap   meanFSC    vsTruth  halfmap   meanFSC
+----------------------------------------------------------------------
+      [posterior] MODES=10 PEAKS=1 GAMMA_MARG=0: captured mass 0.109   n_eff 1.00
+    1      22.0p      20p    0.4411      22.0p      20p    0.4415  
+    2      22.0p      20p    0.4411      22.0p      20p    0.4413  
+    3      22.0p      20p    0.4411      22.0p      20p    0.4413  
+##### rc=0
+##### ALL DONE
