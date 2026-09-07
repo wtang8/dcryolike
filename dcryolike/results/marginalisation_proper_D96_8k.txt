@@ -1,0 +1,19 @@
+##### SNR 0.3, 8000 particles, proper marginal
+      [posterior] MODES=200 PEAKS=0 GAMMA_MARG=1: captured mass 1.000   n_eff 25.71
+    1      25.0p      23p    0.4989      26.0p      24p    0.5172  
+    2      25.0p      23p    0.5046      26.0p      24p    0.5247  
+    3      25.0p      23p    0.5052      26.0p      24p    0.5227  
+    4      25.0p      23p    0.5053      26.0p      24p    0.5225  
+    5      25.0p      23p    0.5053      26.0p      24p    0.5225  
+    6      25.0p      23p    0.5053      26.0p      24p    0.5225  
+##### rc=0
+##### SNR 0.1, 8000 particles, proper marginal
+      [posterior] MODES=200 PEAKS=0 GAMMA_MARG=1: captured mass 0.995   n_eff 80.45
+    1      21.0p      19p    0.4123      22.0p      21p    0.4378  
+    2      21.0p      19p    0.4144      22.5p      20p    0.4509  
+    3      21.0p      19p    0.4146      22.0p      20p    0.4454  
+    4      21.0p      19p    0.4148      22.0p      20p    0.4449  
+    5      21.0p      19p    0.4148      22.0p      20p    0.4449  
+    6      21.0p      19p    0.4148      22.0p      20p    0.4449  
+##### rc=0
+##### ALL DONE

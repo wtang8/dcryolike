@@ -176,6 +176,128 @@ disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
 
 ## 1. Current State
 
+**2026-09-07, evening. The project's central negative conclusion was wrong, and the
+error was in the instrument.** Everything committed; harness green; nothing running.
+
+### What was concluded, and why it was wrong
+
+Earlier today this file recorded that pose marginalisation is "an artefact of small box
+size": the mixture-vs-argmax margin measured +1-4% at D=48 but only +0.06-0.10% at D=96,
+and a posterior-anatomy measurement showed the pose posterior is single-basin at D=96.
+All of that is accurate as far as it goes. It does not support the conclusion.
+
+The mixture in every one of those runs used a shortlist of **10 local maxima at least
+NEIGH degrees apart, weighted by their PEAK values, with the in-plane angle MAXIMISED
+rather than integrated**. Measuring what fraction of the full-grid posterior that
+shortlist actually holds:
+
+| selection | captured posterior mass | effective directions |
+|-----------|------------------------|---------------------|
+| 10 peaks (every earlier result) | **2.1%** at D=96, 3.3% at D=48 | 1.94 |
+| 10 dense + in-plane marginal | 13.1% | 9.97 |
+| 50 dense | 45.0% | 47.8 |
+| 200 dense | 80.6% | 148.6 |
+| 1000 dense | 98.2% | 286.5 |
+
+So "the mixture" was a softmax normalised over about two percent of the probability, with
+an effective spread of one direction. It was never a marginal. The negative result
+measured competition between distinct basins, which genuinely vanishes with box size,
+while the benefit lives in the WIDTH OF THE WINNING BASIN, which does not.
+
+### The corrected result
+
+Proper marginalisation (dense views, in-plane integrated, 200 modes, ~100% of posterior
+mass), D=96, 8,000 particles, gold standard, raw reference
+(`results/marginalisation_proper_D96_8k.txt`):
+
+| | SNR 0.3 | SNR 0.1 |
+|--------------------------|----------|----------|
+| margin, iterations 2-6 | **+3.4 to 4.0%** | **+7.3 to 8.8%** |
+| resolution vs truth | 26 px vs 25 | 22 px vs 21 |
+| half-map | 24 px vs 23 | 20 px vs 19 |
+| effective directions | 25.7 | 80.5 |
+| peak-shortlist margin, same box | +0.06-0.10% | — |
+
+The margin persists at full particle count, grows with noise in proportion to the
+effective-direction count, is flat from iteration 3 (converged, not transient), and gains
+a full resolution shell on an independent metric. It exceeds the +1-4% originally claimed
+at D=48.
+
+**Pose marginalisation works at realistic box size. The shortlist was the problem.**
+
+### Mechanism
+
+The benefit is not choosing between rival orientations; it is declining to collapse a
+peak that has genuine width. Argmax snaps each particle to one of 30,522 grid points and
+inserts coherent signal at a slightly wrong orientation, which accumulates as coherent
+bias. The marginal inserts with the uncertainty the data support. That is why it shows up
+as a resolution shell and not only as a mean-FSC number, and why it scales with noise.
+
+### What this invalidates
+
+1. Section 1 as written this morning, and the "regime-limited" framing throughout.
+2. The evidence-gap distribution work (`results/evidence_gap_distribution_D96.txt`) and
+   the adaptive-rule dead end: both measured BETWEEN-basin competition.
+3. `results/pose_posterior_anatomy.txt` remains valid but its within-basin spread
+   (0.38-0.83 deg) is inconsistent with 25-80 effective directions on a 1.19 deg grid,
+   which implies ~6 deg of support. The scan used a +-4 deg cone and probably truncated
+   the posterior. Redo with a wider cone before quoting either number.
+4. Both published artifacts, which currently present the box-size story as the answer.
+5. **All heterogeneous conclusions.** The conformational latent was estimated at the same
+   10 peak modes with effective spread 1.00. With 25-80 directions of real pose
+   uncertainty the latent posterior is far broader than anything measured, and the
+   components were fitted at over-confident poses.
+
+### Infrastructure (unchanged, all still valid)
+
+Single precision by default (`DTYPE=double` restores the old path, bit-identical);
+generators chunked and built in place; `iterative_halfset_physical.py` runs at D=96 and
+now takes `MODES`, `PEAKS` and `GAMMA_MARG` from the environment, defaults reproducing
+the D=48 result bit-identically; `test_hetero_scale.py` pins the reconstruction-scale
+fix. 15 suites green.
+
+## 2. Working Hypotheses & Roadblocks
+
+- **The right object is a local posterior, not a shortlist of discrete candidates.** 200
+  modes captured essentially all the mass, so a shortlist is still the right computational
+  object, but it must be a REGION around the peak with proper weights. A proposal network
+  should predict a direction and a width, which is an easier learning target than picking
+  candidates.
+- **Refinement and marginalisation answer different questions.** The earlier result that
+  refinement reaches the accuracy limit from any starting grid is about finding the PEAK.
+  This result says the peak is the wrong object. The project treated the first as settling
+  the second.
+- **A conclusion is only as good as the statistic behind it.** Two errors this session had
+  the same shape: a mode count that could not see within-basin structure, and a mixture
+  that discarded 98% of its posterior. Both were used to declare an absence. Any future
+  claim of "no effect" should be accompanied by a measurement of what the instrument can
+  detect.
+
+## 3. Exact Next Action
+
+**Re-run the D=48 comparison with proper marginalisation.** The peak shortlist captured
+only 3.3% of the posterior there, so the original +1-4% is probably an underestimate too,
+and the box-size comparison needs both ends measured the same way.
+
+```
+env D=48 NP=8000 ITERS=6 SNR=0.1 GOLD=1 MODES=200 PEAKS=0 GAMMA_MARG=1 \
+    venv/bin/python -u dcryolike/tests/iterative_halfset_physical.py
+```
+
+Prediction to write down first: the D=48 margin with proper marginalisation exceeds the
++1.9-2.6% recorded with the peak shortlist at this SNR, and lands near or above the
++7.3-8.8% just measured at D=96, since the posterior is broader at the smaller box.
+
+Then, in order: redo the anatomy scan with a wider cone; re-run the heterogeneous linear
+pilot with `MODES=200 PEAKS=0 GAMMA_MARG=1`; rewrite both artifacts.
+
+
+---
+
+### Superseded, kept for the record
+
+
+
 **2026-09-07, 15:30. The project's central positive claim has been characterised and
 is regime-limited.** Everything committed and pushed; harness green; nothing running.
 
@@ -271,105 +393,4 @@ GAUGE PIN, not the gridding correction, is load-bearing. 15 suites green.
 - The heterogeneous model is a verified reimplementation of a 3DVA-class method with an
   unusually strong validation harness. Its distinctive element (averaging the latent over
   the pose posterior) inherits the same domain limit as the homogeneous claim.
-
-## 3. Exact Next Action
-
-**Measure the distribution of the evidence gap, not its median.** Every number above is a
-median over particles at a fixed nominal SNR. Real datasets vary per particle. Generate a
-stack with realistic per-particle variation (defocus 0.5-2.5 um already varies; add
-per-particle SNR spread of the kind ice-thickness produces, say a factor of 3 either way)
-at D=96, and report the histogram of the evidence gap and the fraction of particles below
-~3 nats, the threshold where the anatomy table shows basins genuinely compete.
-
-Prediction to write before running: at D=96 with a 3x SNR spread, fewer than 10% of
-particles fall below 3 nats, and the aggregate margin from an adaptive rule is under 0.5%.
-
-Decision: if the low-gap fraction is small, the project's honest conclusion is written and
-the work is a characterisation of when pose marginalisation helps, which is publishable as
-such. If it is large (>25%), the adaptive rule is worth building and is the general claim.
-
-\n---\n\n### Superseded, kept for the record\n\n
-
-**2026-09-07, 04:30. A measurement made tonight changes what this project can claim.**
-Everything is committed and pushed; harness green (14 suites); nothing running.
-
-**THE FINDING: the pose posterior is one-hot at realistic box size.**
-`tests/hetero_mode_spread.py` measures the effective number of shortlist modes,
-exp(entropy of the posterior weights), with no fitting. Results
-(`results/hetero_mode_spread_D{48,96}.txt`, 1000 particles per row, consensus reference):
-
-| SNR  | D=48 n_eff | D=96 n_eff | D=48 w_true | D=96 w_true |
-|------|-----------|-----------|------------|------------|
-| 0.30 | 1.55      | **1.00**  | 0.12       | 0.83       |
-| 0.10 | 5.32      | **1.00**  | 0.02       | 0.52       |
-| 0.05 | 7.25      | **1.00**  | 0.01       | 0.33       |
-| 0.02 | 8.74      | 2.68      | 0.00       | 0.07       |
-
-(w_true = posterior weight on modes actually within tolerance of the true pose.)
-
-**Why:** the posterior temperature is ~1,200 at D=48 and ~4,800 at D=96. A larger
-image carries proportionally more evidence per particle, so the likelihood sharpens
-and one mode takes all the weight. At D=96, SNR 0.05 the top mode is WRONG 67% of the
-time and the posterior is confidently wrong: marginalisation cannot repair an error the
-posterior does not know it is making.
-
-**Consequences, in order of importance:**
-
-1. **The heterogeneous "average the latent over the shortlist" claim is dead at D=96.**
-   Averaging over a one-hot posterior is arithmetically identical to taking the argmax.
-   Confirmed independently: MODES=1 and MODES=10 gave trajectories agreeing to three
-   decimals (drivers 10 vs 11).
-2. **The project's headline homogeneous result is predicted to collapse at D=96.**
-   The mixture-vs-argmax margin (+1-4% mean FSC, reported across five protocols) was
-   measured ENTIRELY at D=48, exactly where the posterior spreads. "Mixture at D=96" has
-   been the outstanding item in this file since the diagnostic phase closed and was never
-   run. It is now queued with a predicted NEGATIVE outcome (jobq 21, 22).
-3. **The mechanism was never posterior correctness.** At D=48, w_true is 0.01-0.12: the
-   spread is over mostly WRONG poses. The margin, if real, comes from diluting coherent
-   bias into noise that averages away over many particles, not from the shortlist
-   containing the answer. Any writeup that implies the latter is wrong.
-
-**Also corrected tonight:** I claimed a "shared-latent E-step" was the missing piece.
-It was not. `pipeline.reconstruct` line 225 already inserts per-mode CONDITIONAL moments
-weighted by mode probability, which IS exact EM for the joint (pose, latent) posterior.
-A single shared latent would be a cruder factorised approximation. Nothing needed writing.
-
-**Heterogeneous results that stand** (all D=96, physical noise, independent halves,
-single precision, `results/hetero_pilots_D96_driver18_8k_vs_16k_single.txt`):
-
-| particles | rho(z, true angle) | component crossing | mean-FSC margin over V0 |
-|-----------|--------------------|--------------------|------------------------|
-| 8,000     | 0.889              | 14 px              | +0.0042                |
-| 16,000    | 0.893              | **16 px**          | +0.0047                |
-
-Doubling the data buys two shells of component resolution and no extra margin. The
-gate (motion does not disturb the shortlist), the E-step isolation check (rho 0.85 at
-the true pose), and the scale fix all stand.
-
-**Infrastructure changed tonight:** single precision is now the default for experiment
-code (`DTYPE=double` restores the old path, bit-identical); the generator fits 16,000
-particles at D=96 (9.0 -> 4.5 GB) and reports its budget upfront;
-`tests/test_hetero_scale.py` is in the harness and shows the GAUGE PIN, not the gridding
-correction, is what holds the reconstruction scale (drift: gauge only +1.0%, correction
-only -13.5%, neither -13.7%); `iterative_halfset_physical.py` now runs at D=96
-(D/NP/ITERS/MODES/DTYPE/VIEW_DEG from the environment, chunked bank, neighbour index)
-and still reproduces the D=48 margin (+1.0% at iteration 2, SNR 0.05).
-
-## 2. Working Hypotheses & Roadblocks
-
-- **Box size, not noise, decides whether marginalising the pose can help.** The
-  temperature scales with the evidence per image, so the posterior sharpens as D grows.
-  Every marginalisation result in this project was obtained at D=48 and must be re-read
-  in that light. This is the single most important thing to carry forward.
-- **If the D=96 mixture run comes out negative** (predicted), the honest position is:
-  the pipeline is a well-verified reimplementation of a known linear model (nearest
-  relative: cryoSPARC 3DVA) with an unusually strong validation harness, and the
-  distinctive claim did not survive contact with realistic box size. That is publishable
-  as a negative result about when pose marginalisation helps, which is not currently
-  known in the field with this precision.
-- **If it comes out positive**, the mechanism is NOT what was assumed and needs
-  re-derivation before anything rests on it, because n_eff = 1.00 says there is nothing
-  to average.
-- Untested and now lower priority: K=2 (hinge nonlinearity), SNR 0.1 at 16,000 particles,
-  CryoLike's fully integrated likelihood (offset + noise scale) for real data.
 
