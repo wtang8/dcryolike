@@ -1,0 +1,29 @@
+##### BASELINE NP=8000 single  (01:56:46)
+[generate_physical_hetero] n=8000 D=96 grid 49x256: needs ~2.7 GB persistent, 14.1 GB free on the device
+LINEAR LATENT | float32 | GPU duty 0.8 | U_SHRINK=1 TAU=residual POSE=v0 INIT_SPLIT=1 GRID_CORR=1 GAUGE_G=1 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 8000 particles, GOLD halves | U_init=random | C=0.7855 beta median 5296.2
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+      half 0: gridding attenuation a(k) at k=[4, 12, 24]: 0.825 0.816 0.788
+      half 1: gridding attenuation a(k) at k=[4, 12, 24]: 0.828 0.815 0.788
+    1  0.095  0.011  0.000    24.5p  24.5p  23.0p  meanFSC V0 0.4778 V(z) 0.4778   |U|/|V0| 0.195  z std 0.443  U halfFSC0.5 1p |U|shr 0.003  |V0| 114.4  gbar 1.006  tau/tau0 0.975  z-consistency 0.39  rawU/Utrue(k<=14) -0.109  dE[z]/dz_true -0.048  product 0.005
+    2  0.172  0.041  0.001    24.6p  24.6p  23.0p  meanFSC V0 0.4810 V(z) 0.4810   |U|/|V0| 0.034  z std 0.196  U halfFSC0.5 2p |U|shr 0.001  |V0| 115.4  gbar 0.960  tau/tau0 0.999  z-consistency 1.04  rawU/Utrue(k<=14) -0.031  dE[z]/dz_true -0.038  product 0.001
+    3  0.578  0.351  0.001    24.8p  24.8p  23.0p  meanFSC V0 0.4815 V(z) 0.4816   |U|/|V0| 0.016  z std 0.090  U halfFSC0.5 10p |U|shr 0.010  |V0| 115.6  gbar 0.959  tau/tau0 1.000  z-consistency 1.02  rawU/Utrue(k<=14) -0.073  dE[z]/dz_true -0.083  product 0.006
+    4  0.825  0.651  0.003    24.8p  24.9p  23.0p  meanFSC V0 0.4817 V(z) 0.4840   |U|/|V0| 0.086  z std 0.561  U halfFSC0.5 14p |U|shr 0.044  |V0| 115.8  gbar 0.959  tau/tau0 1.000  z-consistency 2.25  rawU/Utrue(k<=14) -0.332  dE[z]/dz_true -0.916  product 0.304
+    5  0.880  0.789  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4816 V(z) 0.4858   |U|/|V0| 0.088  z std 2.141  U halfFSC0.5 14p |U|shr 0.046  |V0| 116.0  gbar 0.959  tau/tau0 1.002  z-consistency 4.83  rawU/Utrue(k<=14) -0.343  dE[z]/dz_true -2.014  product 0.691
+    6  0.889  0.805  0.003    24.9p  24.9p  23.0p  meanFSC V0 0.4817 V(z) 0.4859   |U|/|V0| 0.089  z std 2.150  U halfFSC0.5 14p |U|shr 0.047  |V0| 116.0  gbar 0.959  tau/tau0 1.002  z-consistency 4.85  rawU/Utrue(k<=14) -0.350  dE[z]/dz_true -2.047  product 0.716
+##### rc=0
+##### TEST     NP=16000 single  (02:05:33)
+[generate_physical_hetero] n=16000 D=96 grid 49x256: needs ~4.5 GB persistent, 14.1 GB free on the device
+LINEAR LATENT | float32 | GPU duty 0.8 | U_SHRINK=1 TAU=residual POSE=v0 INIT_SPLIT=1 GRID_CORR=1 GAUGE_G=1 | D=96 grid 49x256 30522 views @ 1.19 deg | physical SNR 0.3 | K=1 | U_KMAX=24 | swing +-15 deg, 16 conformations | 16000 particles, GOLD halves | U_init=random | C=0.7855 beta median 5300.8
+ iter    rho     R2   leak       V0   V(z)   half   (px at FSC 0.5, mean over conformations)
+----------------------------------------------------------------------
+      half 0: gridding attenuation a(k) at k=[4, 12, 24]: 0.828 0.816 0.789
+      half 1: gridding attenuation a(k) at k=[4, 12, 24]: 0.825 0.815 0.788
+    1  0.113  0.015  0.000    26.0p  26.0p  24.0p  meanFSC V0 0.5052 V(z) 0.5052   |U|/|V0| 0.153  z std 0.444  U halfFSC0.5 2p |U|shr 0.008  |V0| 104.4  gbar 1.005  tau/tau0 0.975  z-consistency 0.39  rawU/Utrue(k<=14) -0.134  dE[z]/dz_true -0.057  product 0.008
+    2  0.658  0.420  0.004    26.1p  26.1p  25.0p  meanFSC V0 0.5163 V(z) 0.5173   |U|/|V0| 0.065  z std 0.510  U halfFSC0.5 14p |U|shr 0.042  |V0| 107.7  gbar 0.957  tau/tau0 0.994  z-consistency 1.30  rawU/Utrue(k<=14) -0.272  dE[z]/dz_true -0.408  product 0.111
+    3  0.872  0.772  0.005    26.3p  26.3p  25.0p  meanFSC V0 0.5173 V(z) 0.5218   |U|/|V0| 0.076  z std 2.093  U halfFSC0.5 16p |U|shr 0.051  |V0| 108.2  gbar 0.954  tau/tau0 0.997  z-consistency 4.72  rawU/Utrue(k<=14) -0.343  dE[z]/dz_true -1.932  product 0.663
+    4  0.891  0.811  0.005    26.3p  26.3p  25.0p  meanFSC V0 0.5178 V(z) 0.5224   |U|/|V0| 0.081  z std 2.087  U halfFSC0.5 16p |U|shr 0.055  |V0| 108.4  gbar 0.954  tau/tau0 0.998  z-consistency 4.52  rawU/Utrue(k<=14) -0.370  dE[z]/dz_true -1.977  product 0.731
+    5  0.893  0.816  0.005    26.4p  26.4p  25.0p  meanFSC V0 0.5180 V(z) 0.5227   |U|/|V0| 0.084  z std 2.010  U halfFSC0.5 16p |U|shr 0.057  |V0| 108.5  gbar 0.954  tau/tau0 0.998  z-consistency 4.22  rawU/Utrue(k<=14) -0.387  dE[z]/dz_true -1.924  product 0.744
+Terminated
+##### rc=143
+##### ALL DONE
