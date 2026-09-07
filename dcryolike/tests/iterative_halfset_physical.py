@@ -32,7 +32,11 @@ from cryolike.metadata import ViewingAngles
 from dcryolike.generator import gaussian_atom_volume, generate_physical
 from dcryolike.slicing import fourier_circles, slice_points, slice_nufft, fourier_volume
 
-dev="cuda"; D=48; NP=8000; MODES=10; NEIGH=10.0; ITERS=6; R_INIT=8
+dev="cuda"; D=int(os.environ.get("D","48")); NP=int(os.environ.get("NP","8000"))
+MODES=int(os.environ.get("MODES","10")); NEIGH=10.0*min(1.0,24.0/(D//2)); ITERS=int(os.environ.get("ITERS","6")); R_INIT=8
+# Single precision by default (see the note in hetero_linear_pilot.py); DTYPE=double
+# restores the original path. At D=96 the complex128 stack alone is 3.2 GB.
+DT=torch.float64 if os.environ.get("DTYPE","single")=="double" else torch.float32
 SNR=float(os.environ.get("SNR","0.05")); ISO=dict(astig=0.0)
 # LOWPASS=1: before a half-map becomes the next pose-search bank, low-pass it at
 # the HALF-MAP FSC 0.5 crossing (soft cosine edge, 2 shells). Half-map FSC is
@@ -45,16 +49,19 @@ LOWPASS=os.environ.get("LOWPASS","0")=="1"
 # Default (GOLD=0) is cross-referenced: A posed against B's map and vice versa,
 # which breaks self-reinforcement but lets the halves converge on shared error.
 GOLD=os.environ.get("GOLD","0")=="1"
-vol=gaussian_atom_volume(D,device=dev); Ftrue=fourier_volume(vol)
-pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=128,uniform=True)
+vol=gaussian_atom_volume(D,device=dev,dtype=DT); Ftrue=fourier_volume(vol)
+P_IN=int(os.environ.get("P_INPLANE",str(min(256,int(2**np.ceil(np.log2(2*np.pi*(D//2)*0.85)))))))
+pg=PolarGrid(radius_max=D/2,dist_radii=1.0,n_inplanes=P_IN,uniform=True)
 S,P=pg.n_shells,pg.n_inplanes
 th=torch.tensor(pg.theta_shell,dtype=vol.dtype,device=dev)
 rr=torch.tensor(pg.radius_shells,dtype=vol.dtype,device=dev)
 w=torch.tensor(pg.integration_weight_points,dtype=vol.dtype,device=dev).reshape(S,P); wr=w[:,0]
-va=ViewingAngles.from_viewing_distance(np.radians(4.0))
+VIEW_DEG=float(os.environ.get("VIEW_DEG", "4.0" if D<=48 else str(np.degrees(1.0/(D//2)))))
+va=ViewingAngles.from_viewing_distance(np.radians(VIEW_DEG))
 caz=va.azimus.to(dev).to(vol.dtype); cpo=va.polars.to(dev).to(vol.dtype); V=caz.shape[0]
-nd=torch.stack([torch.sin(cpo)*torch.cos(caz),torch.sin(cpo)*torch.sin(caz),torch.cos(cpo)],-1)
-NB=(nd@nd.T)>=np.cos(np.radians(NEIGH))
+# neighbour INDEX, not a V x V matrix: 30,522^2 booleans is 931 MB at D=96
+from dcryolike.pipeline import neighbourhood as _nbh
+NB,nd=_nbh(caz,cpo,NEIGH)
 p=generate_physical(vol,pg,NP,SNR,seed=17,device=dev,ctf_kwargs=ISO)
 In=torch.sqrt((p.images_fourier.abs()**2*w).sum(dim=(1,2)))
 # ---- posterior temperature from MEASURED noise statistics ----
@@ -86,7 +93,7 @@ def to_real(F):
     return torch.fft.fftshift(torch.fft.ifftn(torch.fft.ifftshift(F),norm="ortho")).real.contiguous()
 
 def insert(pts,vals,c2,num,den):
-    x=pts+D//2; ok=((x>=0)&(x<=D-1)).all(-1)
+    pts=pts.to(torch.float64); x=pts+D//2; ok=((x>=0)&(x<=D-1)).all(-1)
     x=x[ok]; v=vals[ok]; c=c2[ok]; f=torch.floor(x).long(); fr=x-f
     for dx in (0,1):
         for dy in (0,1):
@@ -95,8 +102,8 @@ def insert(pts,vals,c2,num,den):
                   ((1-fr[:,2]) if dz==0 else fr[:,2])
                 i0=(f[:,0]+dx).clamp(0,D-1);i1=(f[:,1]+dy).clamp(0,D-1);i2=(f[:,2]+dz).clamp(0,D-1)
                 fl=(i0*D+i1)*D+i2
-                num.index_put_((fl,),v*g.to(v.dtype),accumulate=True)
-                den.index_put_((fl,),c*g,accumulate=True)
+                num.index_put_((fl,),(v*g.to(v.dtype)).to(num.dtype),accumulate=True)
+                den.index_put_((fl,),(c*g).to(den.dtype),accumulate=True)
 
 def reconstruct(ids,sel_idx,sel_w,gam,lam=1e-3,B=250):
     num=torch.zeros(D**3,dtype=torch.complex128,device=dev)
@@ -118,18 +125,27 @@ def reconstruct(ids,sel_idx,sel_w,gam,lam=1e-3,B=250):
 
 def pose_search(dens_ref,ids):
     n=len(ids)
-    Tb=slice_nufft(dens_ref,slice_points(fourier_circles(th,cpo,caz,torch.zeros_like(caz)),rr)).reshape(V,S,P)
-    Tf=torch.fft.fft(Tb,dim=-1).conj(); Tpow=(Tb.abs()**2).sum(-1)
+    # chunked bank: 30,522 views at D=96 is 3.1 GB in complex64 and cannot be built
+    # in one slice call
+    CDTB=torch.complex64 if DT==torch.float32 else torch.complex128
+    Tf=torch.empty(V,S,P,dtype=CDTB,device=dev); Tpow=torch.empty(V,S,dtype=DT,device=dev)
+    for i in range(0,V,2048):
+        j=min(i+2048,V)
+        Tb=slice_nufft(dens_ref,slice_points(fourier_circles(th,cpo[i:j],caz[i:j],torch.zeros_like(caz[i:j])),rr)).reshape(j-i,S,P).to(CDTB)
+        Tf[i:j]=torch.fft.fft(Tb,dim=-1).conj(); Tpow[i:j]=(Tb.abs()**2).sum(-1).to(DT)
+        del Tb
     crs=cr[ids]; Ins=In[ids]
-    Tn=torch.sqrt(torch.einsum('vr,br->bv',Tpow,wr[None,:]*crs**2))
+    Tn=torch.sqrt(torch.einsum('vr,br->bv',Tpow,(wr[None,:]*crs**2).to(Tpow.dtype)))
     bc=torch.empty(n,V,device=dev,dtype=vol.dtype); bg=torch.empty(n,V,device=dev,dtype=vol.dtype)
     for i in range(0,n,16):
         j=min(i+16,n); g_=ids[i:j]
-        If=torch.fft.fft(p.images_fourier[g_],dim=-1); cw=(wr[None,:]*crs[i:j])[:,:,None]
+        If=torch.fft.fft(p.images_fourier[g_].to(Tf.dtype),dim=-1); cw=(wr[None,:]*crs[i:j])[:,:,None].to(Tf.dtype)
         cc=torch.fft.ifft(torch.einsum('vrk,brk->bvk',Tf,If*cw),dim=-1).real
         cc=cc/(Tn[i:j,:,None]*Ins[i:j,None,None])
-        m,gi=cc.max(-1); bc[i:j]=m; bg[i:j]=-(gi.to(vol.dtype))*(2*np.pi/P)
-    nbmax=torch.stack([bc[:,NB[v]].max(1).values for v in range(V)],1)
+        m,gi=cc.max(-1); bc[i:j]=m.to(bc.dtype); bg[i:j]=-(gi.to(bg.dtype))*(2*np.pi/P)
+    nbmax=torch.empty_like(bc)
+    for i in range(0,V,2048):
+        j=min(i+2048,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
     masked=bc.masked_fill(~(bc>=nbmax-1e-12),-2.0)
     tcc,tidx=masked.topk(MODES,dim=1)
     lg=(beta[ids][:,None]*(tcc**2-tcc[:,:1]**2)).masked_fill(tcc<-1.0,-1e30)

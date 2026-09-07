@@ -176,6 +176,119 @@ disabled) + `venv/` (gitignored, rebuild from `dcryolike/requirements.txt`).
 
 ## 1. Current State
 
+**2026-09-07, 04:30. A measurement made tonight changes what this project can claim.**
+Everything is committed and pushed; harness green (14 suites); nothing running.
+
+**THE FINDING: the pose posterior is one-hot at realistic box size.**
+`tests/hetero_mode_spread.py` measures the effective number of shortlist modes,
+exp(entropy of the posterior weights), with no fitting. Results
+(`results/hetero_mode_spread_D{48,96}.txt`, 1000 particles per row, consensus reference):
+
+| SNR  | D=48 n_eff | D=96 n_eff | D=48 w_true | D=96 w_true |
+|------|-----------|-----------|------------|------------|
+| 0.30 | 1.55      | **1.00**  | 0.12       | 0.83       |
+| 0.10 | 5.32      | **1.00**  | 0.02       | 0.52       |
+| 0.05 | 7.25      | **1.00**  | 0.01       | 0.33       |
+| 0.02 | 8.74      | 2.68      | 0.00       | 0.07       |
+
+(w_true = posterior weight on modes actually within tolerance of the true pose.)
+
+**Why:** the posterior temperature is ~1,200 at D=48 and ~4,800 at D=96. A larger
+image carries proportionally more evidence per particle, so the likelihood sharpens
+and one mode takes all the weight. At D=96, SNR 0.05 the top mode is WRONG 67% of the
+time and the posterior is confidently wrong: marginalisation cannot repair an error the
+posterior does not know it is making.
+
+**Consequences, in order of importance:**
+
+1. **The heterogeneous "average the latent over the shortlist" claim is dead at D=96.**
+   Averaging over a one-hot posterior is arithmetically identical to taking the argmax.
+   Confirmed independently: MODES=1 and MODES=10 gave trajectories agreeing to three
+   decimals (drivers 10 vs 11).
+2. **The project's headline homogeneous result is predicted to collapse at D=96.**
+   The mixture-vs-argmax margin (+1-4% mean FSC, reported across five protocols) was
+   measured ENTIRELY at D=48, exactly where the posterior spreads. "Mixture at D=96" has
+   been the outstanding item in this file since the diagnostic phase closed and was never
+   run. It is now queued with a predicted NEGATIVE outcome (jobq 21, 22).
+3. **The mechanism was never posterior correctness.** At D=48, w_true is 0.01-0.12: the
+   spread is over mostly WRONG poses. The margin, if real, comes from diluting coherent
+   bias into noise that averages away over many particles, not from the shortlist
+   containing the answer. Any writeup that implies the latter is wrong.
+
+**Also corrected tonight:** I claimed a "shared-latent E-step" was the missing piece.
+It was not. `pipeline.reconstruct` line 225 already inserts per-mode CONDITIONAL moments
+weighted by mode probability, which IS exact EM for the joint (pose, latent) posterior.
+A single shared latent would be a cruder factorised approximation. Nothing needed writing.
+
+**Heterogeneous results that stand** (all D=96, physical noise, independent halves,
+single precision, `results/hetero_pilots_D96_driver18_8k_vs_16k_single.txt`):
+
+| particles | rho(z, true angle) | component crossing | mean-FSC margin over V0 |
+|-----------|--------------------|--------------------|------------------------|
+| 8,000     | 0.889              | 14 px              | +0.0042                |
+| 16,000    | 0.893              | **16 px**          | +0.0047                |
+
+Doubling the data buys two shells of component resolution and no extra margin. The
+gate (motion does not disturb the shortlist), the E-step isolation check (rho 0.85 at
+the true pose), and the scale fix all stand.
+
+**Infrastructure changed tonight:** single precision is now the default for experiment
+code (`DTYPE=double` restores the old path, bit-identical); the generator fits 16,000
+particles at D=96 (9.0 -> 4.5 GB) and reports its budget upfront;
+`tests/test_hetero_scale.py` is in the harness and shows the GAUGE PIN, not the gridding
+correction, is what holds the reconstruction scale (drift: gauge only +1.0%, correction
+only -13.5%, neither -13.7%); `iterative_halfset_physical.py` now runs at D=96
+(D/NP/ITERS/MODES/DTYPE/VIEW_DEG from the environment, chunked bank, neighbour index)
+and still reproduces the D=48 margin (+1.0% at iteration 2, SNR 0.05).
+
+## 2. Working Hypotheses & Roadblocks
+
+- **Box size, not noise, decides whether marginalising the pose can help.** The
+  temperature scales with the evidence per image, so the posterior sharpens as D grows.
+  Every marginalisation result in this project was obtained at D=48 and must be re-read
+  in that light. This is the single most important thing to carry forward.
+- **If the D=96 mixture run comes out negative** (predicted), the honest position is:
+  the pipeline is a well-verified reimplementation of a known linear model (nearest
+  relative: cryoSPARC 3DVA) with an unusually strong validation harness, and the
+  distinctive claim did not survive contact with realistic box size. That is publishable
+  as a negative result about when pose marginalisation helps, which is not currently
+  known in the field with this precision.
+- **If it comes out positive**, the mechanism is NOT what was assumed and needs
+  re-derivation before anything rests on it, because n_eff = 1.00 says there is nothing
+  to average.
+- Untested and now lower priority: K=2 (hinge nonlinearity), SNR 0.1 at 16,000 particles,
+  CryoLike's fully integrated likelihood (offset + noise scale) for real data.
+
+## 3. Exact Next Action
+
+**Read jobq jobs 21 and 22** (`jobq logs 21`), the mixture-vs-argmax comparison at D=96,
+SNR 0.3 and 0.1, gold standard, raw reference, 8,000 particles, 6 iterations. Both carry
+their prediction and decision rule in the script header
+(`scratchpad/job_mixture_d96_snr{03,01}.sh`).
+
+**Prediction (written before the run):** the mean-FSC margin of mixture over argmax is
+below +0.3% at both SNRs, against +1.0-2.0% (SNR 0.3) and +1.9-2.6% (SNR 0.1) at D=48.
+
+**Decision:**
+- Margin < 0.3% -> the marginalisation claim is box-size dependent and does not survive
+  at realistic size. Write up the negative result. The measurement in
+  `hetero_mode_spread.py` is the explanation and belongs in it.
+- Margin >= 1% -> the mechanism is not the posterior spread; stop and re-derive before
+  building further.
+
+Then, either way, update the two artifacts: "The Recall Ceiling"
+(https://claude.ai/code/artifact/5eb5c62a-4a61-4e50-96b8-0526f66e6632) presents the
+mixture margin without the box-size caveat, and "The Hinge Pilots"
+(https://claude.ai/code/artifact/ce5006d1-b716-49f7-b534-b9095372b35d) presents the
+shortlist-averaging design as the distinctive contribution.
+
+
+---
+
+### Superseded, kept for the record
+
+
+
 **2026-09-06 (early morning). Heterogeneous reconstruction: gate passed, pilots run, one component
 of a real hinge motion recovered from a random start at D=96.** Everything is committed and pushed
 (`main`); logs are under `dcryolike/results/hetero_*`. The machine was shut down at the end of the
@@ -255,67 +368,3 @@ pattern from a shell whose own command line contains it (it kills the shell; use
 - Symmetry-breaking for discrete classes (random split) does not work at 4,000 particles per
   half even at SNR 0.3; not central to the plan, parked.
 
-## 3. Exact Next Action
-
-**CORRECTION (7 Sep, from `tests/test_hetero_scale.py`): the GAUGE PIN is the load-bearing fix,
-not the gridding correction.** All four combinations, E-M at true poses, D=48, drift of |V0| over
-4 iterations: correction+gauge +1.1%, gauge only +1.0%, correction only −13.5%, neither −13.7%.
-The gauge pin (multiply by the mean posterior gain each M-step) is what makes the scale stationary;
-the per-shell correction only sets the constant it settles at (and closes the ~15% attenuation, so
-the two together are still the right configuration). The 6 Sep text below, which credits the
-correction, is superseded on that point; its diagnosis of the mechanism stands.
-
-**CONFIRMED (6 Sep, 23:40). Drivers 15 and 16** (`results/hetero_pilots_D96_driver15_gridcorr.txt`,
-`..._driver16_gridcorr_gauge.txt`): with the gridding correction the model's volumes stay above the
-consensus, +0.0036–0.0038 mean FSC from iteration 4 through 8 (every earlier run had fallen below by
-iteration 7); with the gauge pin added, V0's norm is stationary (117.9 → 118.5 over iterations 2–8;
-driver 15 without it crept 121 → 150). The mean posterior gain sits at a constant 0.966 (the measured
-correction overshoots by ~3.5%; the pin removes it each round). The linear pilot now works end to
-end at D=96, SNR 0.3, grid poses, ten modes, K=1: rho 0.89, R² 0.80.
-
-**Next, in order, each with its prediction written before launch:**
-1. **NP=16000** (same settings). Prediction: the component's half-set FSC 0.5 crossing moves from
-   14 px to ≥17 px (noise bulk edge scales with 1/√N), and V(z) − V0 at least doubles (the
-   shrinkage keeps more shells). If the crossing does not move, the resolution limit is not the
-   particle count and the shrinkage rule is the next suspect.
-2. **K=2** with the corrected pipeline. Prediction: rho of the first latent unchanged (0.89), the
-   second component's leakage into rigid motions ≤0.01, and V(z) − V0 higher than K=1 at the
-   extreme conformations (the quadratic term of the hinge). If the second component is noise
-   (half-set FSC 0.5 below 6 px), one component is all this stack supports.
-3. **Single-pose vs shortlist-averaged latent** at SNR 0.3 / 0.1 / 0.05 (MODES=1 vs 10 with a
-   shared latent per particle — needs the shared-z E-step, not yet written). This is the claim
-   only this pipeline can test; at SNR 0.3 the two are already identical (weights near one-hot).
-4. Register `hetero_mstep_check.py` in `run_tests.sh` asserting corrected scales ≥ 0.9.
-
-(older text follows) **Read driver 15** (`dcryolike/results/hetero_pilots_D96_driver15_gridcorr.txt` once archived; else
-`scratchpad/pilots15.log`). Success = `meanFSC V(z)` stays above `V0` from iteration 2 through 8
-and the printed `|V0|` stays ~77 instead of falling. If so: the linear pilot works end to end; go to
-NP=16000, then K=2, then the single-pose vs shortlist-averaged latent comparison at SNR 0.3/0.1/0.05.
-If `|V0|` still drifts: the correction was measured with CTF but without the τ/ω weights; measure it
-inside the same weighted accumulation (pass the run's weights to `gridding_correction`).
-
-Also: make the M-step check assert the corrected scales (≥0.9) and register it in `run_tests.sh`;
-the per-iteration `|V0|` print stays.
-
-(older text follows) Read the result of driver 11 (`scratchpad/pilots11.log` if the session is still alive, else re-run):
-
-```
-systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
-    env D=96 K=1 SNR=0.3 ITERS=8 U_KMAX=24 MODES=1 venv/bin/python -u dcryolike/tests/hetero_linear_pilot.py
-```
-
-Compare with driver 10 (`dcryolike/results/hetero_pilots_D96_driver10_pose_v0.txt`): there the
-`product` column would read ~1.8 by iteration 8 and V(z) falls below V0 from iteration 7.
-
-1. **If MODES=1 holds the product near 0.65 and V(z) stays above V0:** the shortlist mixture is
-   the mechanism. Implement the principled version — one z per particle shared across its modes
-   (marginalise the pose with a common latent, instead of a per-mode latent fitted to each wrong
-   pose) — and re-run with MODES=10. Expect the pose-marginalisation gain (+1–4% in the
-   homogeneous work) to come back on top.
-2. **If MODES=1 still inflates:** the 1.19° grid pose error is the mechanism. Test with an
-   oracle-pose run (true poses, MODES=1) which must match the isolation loop (~0.65); then add
-   pose refinement (`refine.py`, marginal objective) before the E-step.
-3. Then NP=16000 and K=2 as before; then cut refinement cost, write-up.
-
-Previously queued and still valid: mixture at D=96 on the GOLD raw-reference protocol (homogeneous
-claim); soft SSNR reference weighting (low priority).
