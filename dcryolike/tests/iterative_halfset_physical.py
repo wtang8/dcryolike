@@ -137,17 +137,25 @@ def pose_search(dens_ref,ids):
     crs=cr[ids]; Ins=In[ids]
     Tn=torch.sqrt(torch.einsum('vr,br->bv',Tpow,(wr[None,:]*crs**2).to(Tpow.dtype)))
     bc=torch.empty(n,V,device=dev,dtype=vol.dtype); bg=torch.empty(n,V,device=dev,dtype=vol.dtype)
-    for i in range(0,n,16):
-        j=min(i+16,n); g_=ids[i:j]
+    # the (b,V,P) correlation block is 1 GB per 16 images at D=96; keep it near 0.5 GB
+    CB=max(1,int(5e8//(V*P*8)))
+    for i in range(0,n,CB):
+        j=min(i+CB,n); g_=ids[i:j]
         If=torch.fft.fft(p.images_fourier[g_].to(Tf.dtype),dim=-1); cw=(wr[None,:]*crs[i:j])[:,:,None].to(Tf.dtype)
         cc=torch.fft.ifft(torch.einsum('vrk,brk->bvk',Tf,If*cw),dim=-1).real
         cc=cc/(Tn[i:j,:,None]*Ins[i:j,None,None])
         m,gi=cc.max(-1); bc[i:j]=m.to(bc.dtype); bg[i:j]=-(gi.to(bg.dtype))*(2*np.pi/P)
+        del cc,If,cw
+    del Tf,Tpow,Tn; torch.cuda.empty_cache()   # 3.1 GB, not needed past the search
+    # the neighbourhood gather is (n, chunk, width) and width is ~55 views at D=96,
+    # so the chunk has to be small or this is the peak of the whole run
     nbmax=torch.empty_like(bc)
-    for i in range(0,V,2048):
-        j=min(i+2048,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
-    masked=bc.masked_fill(~(bc>=nbmax-1e-12),-2.0)
-    tcc,tidx=masked.topk(MODES,dim=1)
+    GC=max(64,int(2e8//(n*max(1,NB.shape[1])*4)))
+    for i in range(0,V,GC):
+        j=min(i+GC,V); nbmax[:,i:j]=bc[:,NB[i:j]].max(-1).values
+    bc.masked_fill_(~(bc>=nbmax-1e-12),-2.0)   # in place: bc is not needed afterwards
+    del nbmax
+    tcc,tidx=bc.topk(MODES,dim=1)
     lg=(beta[ids][:,None]*(tcc**2-tcc[:,:1]**2)).masked_fill(tcc<-1.0,-1e30)
     return tidx,torch.softmax(lg,dim=1),bg
 
