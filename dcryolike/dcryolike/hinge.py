@@ -117,3 +117,123 @@ def render_hinged(core, dom_atoms, axis_point, axis_dir, theta, D, sigma_vox=1.4
     R = rodrigues(a, torch.as_tensor(float(theta), dtype=dtype))
     moved = (dom_atoms.cpu() - p) @ R.T + p
     return core + _render_atoms(moved, D, sigma_vox, device, dtype)
+
+
+# ---------------------------------------------------------------------------
+# Joint quadrature over (pose, hinge angle, in-plane angle, gain)
+# ---------------------------------------------------------------------------
+
+def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, axis_dir,
+                     D=None, backend="nufft"):
+    """Log posterior weight of every (view, hinge angle) for a batch of particles.
+
+    images : (nb, S, P) complex      ctf : (nb, S, P) real      w : (S, P) real
+    beta   : (nb,)   the temperature ||y||^2_w / (2 sigma^2 C)
+    pts    : (nb, M, S*P, 3)  slice coordinates of each particle's M shortlisted views
+    thetas : (T,)    the hinge-angle quadrature grid, radians
+
+    returns  logw (nb, M, T)  the log weight with the in-plane angle MARGINALISED,
+             gidx (nb, M, T)  the best in-plane index, for insertion
+
+    The gain is profiled out, which for a one-parameter linear model makes the
+    log-likelihood beta * cc^2 with cc the normalised correlation; the in-plane angle
+    is integrated by logsumexp over the ring, using the same FFT identity as the pose
+    search. Two approximations, both deliberate:
+
+      * the WEIGHT integrates over the in-plane angle but the INSERTION uses its
+        argmax, because inserting at every in-plane angle would cost a factor P. The
+        weight is therefore correct and the insertion position is a point estimate
+        within one ring step.
+      * a uniform prior is assumed over the hinge-angle grid, so `thetas` must be
+        evenly spaced for the quadrature to be the plain sum used here.
+    """
+    if D is None:
+        D = core.shape[-1]
+    nb, M = pts.shape[0], pts.shape[1]
+    S, P = images.shape[-2], images.shape[-1]
+    T = len(thetas)
+    cdt = torch.complex64 if core.dtype == torch.float32 else torch.complex128
+    dev = core.device
+    p = torch.as_tensor(axis_point, dtype=core.dtype, device=dev)
+    a = torch.as_tensor(axis_dir, dtype=core.dtype, device=dev)
+
+    wc = (w[None] * ctf).to(cdt)                                  # (nb,S,P)
+    If = torch.fft.fft((wc * images).reshape(nb, S, P), dim=-1)   # (nb,S,P)
+    In = torch.sqrt((images.abs() ** 2 * w[None]).sum(dim=(1, 2)))
+    wc2 = (w[None] * ctf ** 2)                                    # (nb,S,P)
+
+    logw = torch.empty(nb, M, T, dtype=core.dtype, device=dev)
+    gidx = torch.empty(nb, M, T, dtype=torch.long, device=dev)
+    flat = pts.reshape(nb * M, -1, 3)
+    Fc = _slice(core, flat, backend).reshape(nb, M, S, P)          # core: independent of theta
+    for t in range(T):
+        R = rodrigues(a, torch.as_tensor(float(thetas[t]), dtype=core.dtype, device=dev))
+        q = flat @ R
+        phase = torch.exp(2j * np.pi * ((q - flat) @ p) / D).reshape(nb, M, S, P)
+        Tb = Fc + _slice(dom, q, backend).reshape(nb, M, S, P) * phase.to(Fc.dtype)
+        Tn = torch.sqrt(((Tb.abs() ** 2) * wc2[:, None]).sum(dim=(2, 3)))     # (nb,M)
+        cc = torch.fft.ifft(torch.conj(torch.fft.fft(Tb, dim=-1)) * If[:, None], dim=-1)
+        cc = cc.real.sum(2) / (Tn[:, :, None] * In[:, None, None])            # (nb,M,P)
+        b = beta[:, None, None].to(cc.dtype)
+        logw[:, :, t] = torch.logsumexp(b * cc ** 2, dim=-1) - float(np.log(P))
+        gidx[:, :, t] = cc.argmax(-1)
+        del Tb, cc, q, phase
+    return logw, gidx
+
+
+def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, gammas_ring, weights, gidx,
+                thetas, axis_point, axis_dir, core, dom, tau, D, backend="nufft"):
+    """Accumulate one batch into the core and domain volumes.
+
+    The two volumes are coupled: a particle constrains their SUM. The exact normal
+    equations have a dense cross term (a slice hits one voxel of the core and, rotated,
+    a different voxel of the domain), so this uses the standard block scheme -- the
+    same one RELION multi-body uses -- and subtracts the other volume's current
+    prediction before inserting:
+
+        core  <- insert  (y - g c F_dom(q) phase)          at k
+        dom   <- insert  (y - g c F_core(k)) conj(phase)   at q
+
+    with the gain g at its posterior mean. That is Gauss-Seidel on the coupled system,
+    not a single exact solve, so it needs the outer iteration to converge.
+    """
+    nb, M = pts.shape[0], pts.shape[1]
+    S, P = images.shape[-2], images.shape[-1]
+    dev = core.device
+    p = torch.as_tensor(axis_point, dtype=core.dtype, device=dev)
+    a = torch.as_tensor(axis_dir, dtype=core.dtype, device=dev)
+    flat = pts.reshape(nb * M, -1, 3)
+    Fc_all = _slice(core, flat, backend).reshape(nb, M, S, P)
+    for t in range(len(thetas)):
+        wt = weights[:, :, t]                                       # (nb,M)
+        keep = wt > 1e-4
+        if not keep.any():
+            continue
+        R = rodrigues(a, torch.as_tensor(float(thetas[t]), dtype=core.dtype, device=dev))
+        q = flat @ R
+        phase = torch.exp(2j * np.pi * ((q - flat) @ p) / D).reshape(nb, M, S, P)
+        Fd = _slice(dom, q, backend).reshape(nb, M, S, P)
+        Fc = Fc_all
+        # roll each image to the chosen in-plane angle rather than rotating the template
+        g = gidx[:, :, t]                                           # (nb,M)
+        idx = (torch.arange(P, device=dev)[None, None, :] + g[..., None]) % P
+        y = torch.gather(images[:, None].expand(nb, M, S, P), 3,
+                         idx[:, :, None, :].expand(nb, M, S, P))
+        c = torch.gather(ctf[:, None].expand(nb, M, S, P), 3,
+                         idx[:, :, None, :].expand(nb, M, S, P))
+        wq = (w[None, None] * wt[..., None, None] * tau[:, None, None, None])
+        gain = 1.0                                                  # gauge-pinned outside
+        res_core = y - gain * c * Fd * phase.to(Fd.dtype)
+        res_dom = (y - gain * c * Fc) * torch.conj(phase).to(Fc.dtype)
+        sel = keep[..., None].expand(nb, M, S * P).reshape(-1)
+        kk = flat.reshape(nb, M, S * P, 3).reshape(-1, 3)
+        acc_core.add(kk[sel], (res_core.reshape(-1))[sel], (c.reshape(-1))[sel],
+                     (wq.expand(nb, M, S, P).reshape(-1))[sel],
+                     torch.ones(int(sel.sum()), 1, dtype=w.dtype, device=dev),
+                     torch.ones(int(sel.sum()), 1, 1, dtype=w.dtype, device=dev))
+        qq = q.reshape(nb, M, S * P, 3).reshape(-1, 3)
+        acc_dom.add(qq[sel], (res_dom.reshape(-1))[sel], (c.reshape(-1))[sel],
+                    (wq.expand(nb, M, S, P).reshape(-1))[sel],
+                    torch.ones(int(sel.sum()), 1, dtype=w.dtype, device=dev),
+                    torch.ones(int(sel.sum()), 1, 1, dtype=w.dtype, device=dev))
+        del Fd, phase, q, y, c, res_core, res_dom

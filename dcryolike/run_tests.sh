@@ -51,6 +51,7 @@ run dcryolike/tests/test_ill.py        "marginalised likelihood" 600 2
 run dcryolike/tests/test_hetero.py     "heterogeneous model"  600 12
 run dcryolike/tests/test_hetero_scale.py "reconstruction scale" 900 4
 run dcryolike/tests/test_hinge.py     "hinge forward model" 600 4
+run dcryolike/tests/test_hinge_estep.py "hinge angle recovery" 1800 3
 echo
 echo "=========== ANALYSIS SCRIPTS (exit-code only, not verification) ==========="
 run dcryolike/tests/recall_sweep.py    "recall ceiling sweep"  600 0
