@@ -31,7 +31,8 @@ import _paths  # noqa: F401
 from cryolike.grids import PolarGrid
 from dcryolike.generator import _phantom_atoms, _render_atoms, generate_physical_hetero
 from dcryolike.slicing import fourier_circles, slice_points, fourier_volume
-from dcryolike.hinge import hinge_logweights, hinge_mstep, render_hinged, rodrigues
+from dcryolike.hinge import (hinge_logweights, hinge_mstep, render_hinged, rodrigues,
+                             hinge_gridding_correction)
 from dcryolike.hetero import HeteroAccumulator
 from dcryolike.pipeline import temperature, ShellMasks, to_real, duty_sleep, GPU_DUTY
 
@@ -85,7 +86,13 @@ FIT=torch.arange(0,NP//2,device=dev); OUT=torch.arange(NP//2,NP,device=dev)
 V0_init=to_real(shells.lowpass(fourier_volume(cons),R_INIT,width=1.0))
 
 def em(ap,ad,mask,iters):
+    """EM under one hypothesis. Two things learned from the M-step isolation test are
+    applied here: the splat attenuates each volume differently (the domain sits off
+    centre, so its transform carries a phase ramp and is attenuated more), and the
+    core/domain split is non-identifiable where they overlap unless the hypothesis's
+    own mask is enforced after each solve."""
     core=(V0_init*(1-mask)).contiguous(); dom=(V0_init*mask).contiguous()
+    corr=[None,None]
     t0=time.monotonic()
     for it in range(iters):
         acc_c=HeteroAccumulator.new(D,1,dev); acc_d=HeteroAccumulator.new(D,1,dev)
@@ -97,9 +104,19 @@ def em(ap,ad,mask,iters):
             hinge_mstep(acc_c,acc_d,p.images_fourier[g_],p.ctf[g_],w,pts_all[g_],
                         wt,gi,gm,grid,ap,ad,core,dom,tau[g_],D)
             t0=duty_sleep(t0)
-        core=to_real(acc_c.solve(1e-3)[0]); dom=to_real(acc_d.solve(1e-3)[0])
+        Fc=acc_c.solve(1e-3)[0]; Fd=acc_d.solve(1e-3)[0]
         del acc_c,acc_d; torch.cuda.empty_cache()
-    return core,dom
+        if corr[0] is None:
+            sub=FIT[:min(200,len(FIT))]
+            lw,gi,gm=hinge_logweights(p.images_fourier[sub],p.ctf[sub],w,beta[sub],
+                                      core,dom,pts_all[sub],grid,ap,ad,D)
+            wt=torch.softmax(lw.double(),dim=2).to(DT)
+            corr[0],corr[1]=hinge_gridding_correction(core,dom,pts_all[sub],wt,gi,gm,grid,
+                                                      ap,ad,p.ctf[sub],w,tau[sub],D,EB=EB)
+            torch.cuda.empty_cache()
+        core=to_real(Fc*corr[0])*(1-mask)          # enforce the hypothesis's own split
+        dom =to_real(Fd*corr[1])*mask
+    return core.contiguous(),dom.contiguous()
 
 def heldout(core,dom,ap,ad,tgrid):
     out=[]
@@ -124,7 +141,7 @@ for name,ap,ad,mask in HYP:
     print(f"  {name:28s} done in {time.time()-t0:5.0f}s   core+dom vs consensus, mean FSC "
           f"{fsc.mean():.4f}",flush=True)
 # the rigid null: no motion, one volume, fitted the same way
-c0,d0=em(TRUE_P,TRUE_D,M_ARM*0,1)   # mask 0 -> everything in core, domain empty
+c0,d0=em(TRUE_P,TRUE_D,M_ARM*0,ITERS)   # mask 0 -> everything in core, domain empty
 ev["H0 rigid, no motion"]=heldout(c0,d0,TRUE_P,TRUE_D,zero)
 ref=ev["H1 true axis"]
 print()

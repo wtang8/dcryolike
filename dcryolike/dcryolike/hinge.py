@@ -256,3 +256,60 @@ def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, weights, gidx, gains,
                     torch.ones(int(sel.sum()), 1, dtype=w.dtype, device=dev),
                     torch.ones(int(sel.sum()), 1, 1, dtype=w.dtype, device=dev))
         del Fd, phase, q, y, c, res_core, res_dom
+
+
+def hinge_gridding_correction(core, dom, pts, weights, gidx, gains, thetas,
+                              axis_point, axis_dir, ctf, w, tau, D, EB=8, floor=0.2,
+                              backend="nufft"):
+    """Per-shell attenuation of the two-volume M-step, measured at the run's own geometry.
+
+    The trilinear splat returns a volume scaled down, and by an amount that depends on
+    how fast the function varies between voxels. The domain sits away from the box
+    centre, so its Fourier transform carries a rapid phase ramp and is attenuated MORE
+    than the core: measured 0.769 against 0.878 at D=64, which is enough to make the
+    truth not a fixed point of the M-step and to leave the block iteration oscillating.
+
+    This synthesises noiseless images from the current volumes, pushes them through the
+    same M-step with the same weights and geometry, and returns the per-shell divisor
+    that restores what came back. Measured, not assumed, and specific to each volume.
+    """
+    from .hetero import HeteroAccumulator
+    from .slicing import fourier_volume
+    n, M = pts.shape[0], pts.shape[1]
+    S, P = ctf.shape[-2], ctf.shape[-1]
+    dev = core.device
+    ac = HeteroAccumulator.new(D, 1, dev); ad = HeteroAccumulator.new(D, 1, dev)
+    p = torch.as_tensor(axis_point, dtype=core.dtype, device=dev)
+    a = torch.as_tensor(axis_dir, dtype=core.dtype, device=dev)
+    for i in range(0, n, EB):
+        j = min(i + EB, n)
+        flat = pts[i:j].to(core.dtype).reshape(-1, pts.shape[2], 3)
+        Fc = _slice(core, flat, backend).reshape(j - i, M, S, P)
+        ymod = torch.zeros(j - i, S, P, dtype=Fc.dtype, device=dev)
+        wsum = torch.zeros(j - i, 1, 1, dtype=core.dtype, device=dev)
+        for t in range(len(thetas)):
+            R = rodrigues(a, torch.as_tensor(float(thetas[t]), dtype=core.dtype, device=dev))
+            q = flat @ R
+            ph = torch.exp(2j * np.pi * ((q - flat) @ p) / D).reshape(j - i, M, S, P)
+            Fd = _slice(dom, q, backend).reshape(j - i, M, S, P)
+            wt = weights[i:j, :, t][..., None, None].to(core.dtype)
+            ymod += (ctf[i:j][:, None] * (Fc + Fd * ph.to(Fc.dtype)) * wt.to(Fc.dtype)).sum(1)
+            wsum += wt.sum(1)
+        ymod = ymod / wsum.clamp(min=1e-12).to(ymod.dtype)
+        hinge_mstep(ac, ad, ymod, ctf[i:j], w, pts[i:j], weights[i:j], gidx[i:j],
+                    gains[i:j] * 0 + 1.0, thetas, axis_point, axis_dir, core, dom,
+                    tau[i:j] * 0 + 1.0, D, backend)
+    Fc_out = ac.solve(1e-3)[0]; Fd_out = ad.solve(1e-3)[0]
+    ii = torch.arange(D, dtype=torch.float64, device=dev) - D // 2
+    X, Y, Z = torch.meshgrid(ii, ii, ii, indexing="ij"); RR = (X ** 2 + Y ** 2 + Z ** 2).sqrt()
+    out = []
+    for Fo, Vt in ((Fc_out, core), (Fd_out, dom)):
+        Ft = fourier_volume(Vt)
+        corr = torch.ones(D, D, D, dtype=torch.float64, device=dev)
+        for k in range(1, D // 2):
+            m = (RR >= k - 0.5) & (RR < k + 0.5)
+            num = (Fo[m] * Ft[m].conj()).real.sum()
+            den = (Ft[m].abs() ** 2).sum().clamp(min=1e-30)
+            corr[m] = 1.0 / max((num / den).item(), floor)
+        out.append(corr)
+    return out[0], out[1]
