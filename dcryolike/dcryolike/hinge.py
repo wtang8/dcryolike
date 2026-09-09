@@ -135,10 +135,18 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
     returns  logw (nb, M, T)  the log weight with the in-plane angle MARGINALISED,
              gidx (nb, M, T)  the best in-plane index, for insertion
 
-    The gain is profiled out, which for a one-parameter linear model makes the
-    log-likelihood beta * cc^2 with cc the normalised correlation; the in-plane angle
-    is integrated by logsumexp over the ring, using the same FFT identity as the pose
-    search. Two approximations, both deliberate:
+    The gain is MARGINALISED, not profiled. With a flat prior,
+
+        log p(y | R, theta) = const + beta cc^2 - (1/2) log A,     A = <cT, cT>_w
+
+    and the second term is not optional: A varies with the hinge angle (core and domain
+    interfere differently as the domain swings) and between competing hypotheses, so
+    dropping it would favour whichever template happens to carry more power. Profiling
+    the gain instead of integrating it drops exactly that term, which is harmless for
+    ranking angles within one model and wrong for comparing models.
+
+    The in-plane angle is integrated by logsumexp over the ring, using the same FFT
+    identity as the pose search. Two approximations, both deliberate:
 
       * the WEIGHT integrates over the in-plane angle but the INSERTION uses its
         argmax, because inserting at every in-plane angle would cost a factor P. The
@@ -175,7 +183,8 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
         cc = torch.fft.ifft(torch.conj(torch.fft.fft(Tb, dim=-1)) * If[:, None], dim=-1)
         cc = cc.real.sum(2) / (Tn[:, :, None] * In[:, None, None])            # (nb,M,P)
         b = beta[:, None, None].to(cc.dtype)
-        logw[:, :, t] = torch.logsumexp(b * cc ** 2, dim=-1) - float(np.log(P))
+        logw[:, :, t] = (torch.logsumexp(b * cc ** 2, dim=-1) - float(np.log(P))
+                         - torch.log(Tn.clamp(min=1e-30)))
         gidx[:, :, t] = cc.argmax(-1)
         del Tb, cc, q, phase
     return logw, gidx
