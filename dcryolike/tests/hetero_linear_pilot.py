@@ -51,7 +51,17 @@ D=int(os.environ.get("D","32" if SMOKE else "48")); NP=int(os.environ.get("NP","
 MODES=int(os.environ.get("MODES","10")); NEIGH=10.0; ITERS=int(os.environ.get("ITERS","2" if SMOKE else "6")); R_INIT=8
 SNR=float(os.environ.get("SNR","0.1")); K=int(os.environ.get("K","1"))
 SWING=math.radians(float(os.environ.get("SWING","15"))); NCONF=int(os.environ.get("NCONF","16"))
-U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0); EB=32
+U_INIT=os.environ.get("U_INIT","random"); ISO=dict(astig=0.0)
+# PEAKS=0 / GAMMA_MARG=1: the proper pose marginal (dense views, in-plane integrated)
+# rather than 10 local maxima weighted by their peak values. The peak shortlist captured
+# 2.1% of the full-grid posterior at D=96 with effective spread 1.00; every heterogeneous
+# result before this used it, so the conformational latent was fitted at over-confident
+# poses. See HANDOFF.
+PEAKS=os.environ.get("PEAKS","1")=="1"
+GAMMA_MARG=os.environ.get("GAMMA_MARG","0")=="1"
+# The E-step holds a (nb, M, K+1, K+1, S, P) product; at M=200, K=1, D=96 that is
+# 2.6 GB with the old fixed batch of 32. Size the batch from the actual shape.
+EB=int(os.environ.get("EB","0")) or max(1,int(4e8//(MODES*(K+1)**2*max(1,(D//2))*256*8)))
 U_KMAX=float(os.environ.get("U_KMAX","0"))   # >0: band-limit the components to |k|<=U_KMAX after each M-step
 U_SHRINK=os.environ.get("U_SHRINK","1")=="1"   # shrink each component per shell by the half-set FSC of the component
 POSE_FROM=os.environ.get("POSE_FROM","v0")     # v0: in-plane angle and mode weights from the V0-only correlation (the pose
@@ -184,10 +194,11 @@ def family_metrics(V0,U,zbar):
         r0.append(res_at(f0)); rz.append(res_at(fz)); m0.append(f0.mean()); mz.append(fz.mean())
     return np.mean(r0),np.mean(rz),Fz,np.mean(m0),np.mean(mz)
 
-print(f"LINEAR LATENT | {str(DT).replace('torch.','')} | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} GRID_CORR={int(GRID_CORR)} GAUGE_G={int(GAUGE_G)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
+print(f"LINEAR LATENT | MODES={MODES} PEAKS={int(PEAKS)} GAMMA_MARG={int(GAMMA_MARG)} | {str(DT).replace('torch.','')} | GPU duty {GPU_DUTY:g} | U_SHRINK={int(U_SHRINK)} TAU={TAU_MODE} POSE={POSE_FROM} INIT_SPLIT={int(INIT_SPLIT)} GRID_CORR={int(GRID_CORR)} GAUGE_G={int(GAUGE_G)} | D={D} grid {S}x{P} {V} views @ {VIEW_DEG:.2f} deg | physical SNR {SNR} | K={K} | U_KMAX={U_KMAX:g} | swing +-{math.degrees(SWING):.0f} deg, {NCONF} conformations | "
       f"{NP} particles, GOLD halves | U_init={U_INIT} | C={C.item():.4f} beta median {beta.median():.1f}")
 print(f"{'iter':>5}{'rho':>7}{'R2':>7}{'leak':>7}  {'V0':>7}{'V(z)':>7}{'half':>7}   (px at FSC 0.5, mean over conformations)")
 print("-"*70)
+_MASS_DONE=[False]
 state=[(V0_init.clone(),(rand_init(5+h) if (K>0 and U_INIT!="truth" and INIT_SPLIT) else U_init).clone()) for h in range(2)]
 GCORR=[None,None]                                       # per-half gridding correction, measured at the first iteration's poses
 tau_cur=tau.clone()                                    # per-particle noise precision, refitted each E-step
@@ -199,8 +210,19 @@ for it in range(1,ITERS+1):
         if ORACLE:
             tidx=ids[:,None]; wt0=torch.ones(len(ids),1,dtype=DT,device=dev); bg=G_ORACLE[ids]
         else:
-            bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE); bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids]); del bank; torch.cuda.empty_cache()
-            tidx,wt0,_=select_modes(bc,NB,MODES,beta[ids])
+            bank=Bank(V0,th,cpo,caz,rr,S,P,backend=BACKEND,single=SINGLE)
+            bc,bg=bank.search(p.images_fourier[ids],cr[ids],wr,In[ids],
+                              beta=(beta[ids] if GAMMA_MARG else None))
+            del bank; torch.cuda.empty_cache()
+            tidx,wt0,_=select_modes(bc,NB,MODES,beta[ids],peaks=PEAKS)
+            if not _MASS_DONE[0]:
+                _MASS_DONE[0]=True
+                from dcryolike.pipeline import posterior_mass
+                pm=posterior_mass(bc,beta[ids],MODES)
+                print(f"      [posterior] MODES={MODES} PEAKS={int(PEAKS)} "
+                      f"GAMMA_MARG={int(GAMMA_MARG)} EB={EB}: captured mass "
+                      f"{pm.median().item():.3f}",flush=True)
+            del bc; torch.cuda.empty_cache()
         wt,bg,Ea,Eaa,r_sel,pv_sel=estep(V0,U,ids,tidx,bg,wt0)
         if TAU_MODE=="residual":
             # ML noise precision from the expected residual: tau = D^2 / E||y - T a||^2_w
