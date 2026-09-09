@@ -1,0 +1,28 @@
+Marginal log-likelihood per particle, nats, relative to the true hypothesis.
+Negative means the hypothesis is worse. +- is the standard error over particles.
+
+=== SNR 0.3
+  H1 true axis                          +0.00  +-  0.00
+  H4 direction rotated 30 deg          -16.46  +-  0.75
+  H2 axis mid-arm                      -26.19  +-  1.04
+  H3 direction rotated 90 deg          -27.17  +-  0.97
+  H5 axis through the core             -26.63  +-  1.04
+  H6 segmentation swapped              -35.90  +-  1.29
+  H0 rigid, no motion                  -32.89  +-  1.28
+  closest rival is -16.46 nats behind (13 standard errors): PASS
+
+=== SNR 0.1
+  H1 true axis                          +0.00  +-  0.00
+  H4 direction rotated 30 deg           -4.77  +-  0.28
+  H2 axis mid-arm                       -7.44  +-  0.37
+  H3 direction rotated 90 deg           -7.71  +-  0.35
+  H5 axis through the core              -7.57  +-  0.37
+  H6 segmentation swapped              -12.90  +-  0.48
+  H0 rigid, no motion                  -10.10  +-  0.48
+  closest rival is -4.77 nats behind (10 standard errors): PASS
+
+A hypothesis behind by many nats per particle is rejected overwhelmingly once
+the evidence is summed over a real stack. The question this answers is whether
+the likelihood can reject a WRONG proposal, which is what makes an agent's
+hypothesis testable rather than merely plausible.
+ALL PASS (2/2)

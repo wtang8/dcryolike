@@ -68,6 +68,7 @@ def hinge_slice(core, dom, pts, axis_point, axis_dir, theta, D=None, backend="nu
     p = torch.as_tensor(axis_point, dtype=dt, device=core.device)
     a = torch.as_tensor(axis_dir, dtype=dt, device=core.device)
     th = torch.as_tensor(theta, dtype=dt, device=core.device)
+    pts = pts.to(dt)
     R = rodrigues(a, th)                                   # (3,3) or (n_t,3,3)
     if R.dim() == 2:
         q = pts @ R                                        # q = R^T k, since (R^T k)_i = k_j R_ji
@@ -134,6 +135,7 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
 
     returns  logw (nb, M, T)  the log weight with the in-plane angle MARGINALISED,
              gidx (nb, M, T)  the best in-plane index, for insertion
+             gmean (nb, M, T) the posterior mean gain there, E[g] = cc * In / Tn
 
     The gain is MARGINALISED, not profiled. With a flat prior,
 
@@ -164,6 +166,7 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
     dev = core.device
     p = torch.as_tensor(axis_point, dtype=core.dtype, device=dev)
     a = torch.as_tensor(axis_dir, dtype=core.dtype, device=dev)
+    pts = pts.to(core.dtype)
 
     wc = (w[None] * ctf).to(cdt)                                  # (nb,S,P)
     If = torch.fft.fft((wc * images).reshape(nb, S, P), dim=-1)   # (nb,S,P)
@@ -172,6 +175,7 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
 
     logw = torch.empty(nb, M, T, dtype=core.dtype, device=dev)
     gidx = torch.empty(nb, M, T, dtype=torch.long, device=dev)
+    gmean = torch.empty(nb, M, T, dtype=core.dtype, device=dev)
     flat = pts.reshape(nb * M, -1, 3)
     Fc = _slice(core, flat, backend).reshape(nb, M, S, P)          # core: independent of theta
     for t in range(T):
@@ -185,12 +189,15 @@ def hinge_logweights(images, ctf, w, beta, core, dom, pts, thetas, axis_point, a
         b = beta[:, None, None].to(cc.dtype)
         logw[:, :, t] = (torch.logsumexp(b * cc ** 2, dim=-1) - float(np.log(P))
                          - torch.log(Tn.clamp(min=1e-30)))
-        gidx[:, :, t] = cc.argmax(-1)
+        gi = cc.argmax(-1)
+        gidx[:, :, t] = gi
+        ccb = torch.gather(cc, 2, gi[..., None]).squeeze(-1)
+        gmean[:, :, t] = ccb * In[:, None] / Tn.clamp(min=1e-30)
         del Tb, cc, q, phase
-    return logw, gidx
+    return logw, gidx, gmean
 
 
-def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, gammas_ring, weights, gidx,
+def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, weights, gidx, gains,
                 thetas, axis_point, axis_dir, core, dom, tau, D, backend="nufft"):
     """Accumulate one batch into the core and domain volumes.
 
@@ -211,7 +218,7 @@ def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, gammas_ring, weights, gi
     dev = core.device
     p = torch.as_tensor(axis_point, dtype=core.dtype, device=dev)
     a = torch.as_tensor(axis_dir, dtype=core.dtype, device=dev)
-    flat = pts.reshape(nb * M, -1, 3)
+    flat = pts.to(core.dtype).reshape(nb * M, -1, 3)
     Fc_all = _slice(core, flat, backend).reshape(nb, M, S, P)
     for t in range(len(thetas)):
         wt = weights[:, :, t]                                       # (nb,M)
@@ -231,11 +238,14 @@ def hinge_mstep(acc_core, acc_dom, images, ctf, w, pts, gammas_ring, weights, gi
         c = torch.gather(ctf[:, None].expand(nb, M, S, P), 3,
                          idx[:, :, None, :].expand(nb, M, S, P))
         wq = (w[None, None] * wt[..., None, None] * tau[:, None, None, None])
-        gain = 1.0                                                  # gauge-pinned outside
-        res_core = y - gain * c * Fd * phase.to(Fd.dtype)
-        res_dom = (y - gain * c * Fc) * torch.conj(phase).to(Fc.dtype)
+        gr = gains[:, :, t][..., None, None].clamp(min=1e-6)        # posterior mean gain, real
+        gn = gr.to(Fc.dtype)
+        res_core = y - gn * c * Fd * phase.to(Fd.dtype)
+        res_dom = (y - gn * c * Fc) * torch.conj(phase).to(Fc.dtype)
         sel = keep[..., None].expand(nb, M, S * P).reshape(-1)
         kk = flat.reshape(nb, M, S * P, 3).reshape(-1, 3)
+        # divide out the gain so both volumes accumulate on a common scale
+        res_core = res_core / gn; res_dom = res_dom / gn
         acc_core.add(kk[sel], (res_core.reshape(-1))[sel], (c.reshape(-1))[sel],
                      (wq.expand(nb, M, S, P).reshape(-1))[sel],
                      torch.ones(int(sel.sum()), 1, dtype=w.dtype, device=dev),

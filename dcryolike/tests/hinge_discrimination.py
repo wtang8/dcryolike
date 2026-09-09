@@ -83,7 +83,7 @@ def evidence(p,beta,pts,dm,cr,ap,ad,tgrid,B=16):
     out=[]
     for i in range(0,NP,B):
         j=min(i+B,NP)
-        lw,_=hinge_logweights(p.images_fourier[i:j],p.ctf[i:j],w,beta[i:j],cr,dm,
+        lw,_,_=hinge_logweights(p.images_fourier[i:j],p.ctf[i:j],w,beta[i:j],cr,dm,
                               pts[i:j],tgrid,ap,ad,D)
         out.append(torch.logsumexp(lw[:,0].double(),dim=1)-math.log(len(tgrid)))
     return torch.cat(out)

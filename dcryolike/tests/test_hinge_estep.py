@@ -52,7 +52,7 @@ def run(snr, dom_used):
     lw=[];
     for i in range(0,NP,16):
         j=min(i+16,NP)
-        l,_=hinge_logweights(p.images_fourier[i:j],p.ctf[i:j],w,beta[i:j],core,dom_used,
+        l,_,_=hinge_logweights(p.images_fourier[i:j],p.ctf[i:j],w,beta[i:j],core,dom_used,
                              pts[i:j],grid,AXIS_P,AXIS_D,D)
         lw.append(l[:,0])
     lw=torch.cat(lw)                                     # (NP, NTHETA)
